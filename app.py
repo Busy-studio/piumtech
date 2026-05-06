@@ -5,6 +5,7 @@ import base64
 import tempfile
 from io import BytesIO
 from typing import Any, Dict, List, Tuple
+from collections import deque
 
 import fitz  # PyMuPDF
 import streamlit as st
@@ -242,24 +243,63 @@ def normalize_data(data: Dict[str, Any]) -> Dict[str, Any]:
 # 6. 적용분야 이미지 생성
 # =====================================================
 
+def remove_dark_edge_background(src: Image.Image, threshold: int = 70) -> Image.Image:
+    """생성 이미지가 검정/어두운 배경으로 나오는 경우, 가장자리와 연결된 어두운 배경만 흰색으로 치환합니다."""
+    img = src.convert("RGB")
+    w, h = img.size
+    pix = img.load()
+
+    visited = set()
+    q = deque()
+
+    def is_dark(x: int, y: int) -> bool:
+        r, g, b = pix[x, y]
+        return (0.2126 * r + 0.7152 * g + 0.0722 * b) < threshold
+
+    for x in range(w):
+        if is_dark(x, 0):
+            q.append((x, 0))
+        if is_dark(x, h - 1):
+            q.append((x, h - 1))
+    for y in range(h):
+        if is_dark(0, y):
+            q.append((0, y))
+        if is_dark(w - 1, y):
+            q.append((w - 1, y))
+
+    while q:
+        x, y = q.popleft()
+        if (x, y) in visited:
+            continue
+        visited.add((x, y))
+        if not is_dark(x, y):
+            continue
+        pix[x, y] = (255, 255, 255)
+        for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            if 0 <= nx < w and 0 <= ny < h and (nx, ny) not in visited:
+                if is_dark(nx, ny):
+                    q.append((nx, ny))
+
+    return img
+
+
 def generate_application_image(title: str, desc: str) -> Image.Image:
     client = get_client()
 
     prompt = f"""
-Create a premium technology-transfer brochure illustration for a Korean university SMK sheet.
+Create one premium application-field visual for a Korean university technology-transfer SMK sheet.
 
 Application field: {title}
 Technical context: {desc}
 
-Visual direction:
-- realistic, futuristic, clean color flat-icon hybrid
-- product-oriented technology marketing visual, not textbook illustration
-- slightly three-dimensional flat icon / isometric product render feel
-- crisp edges, modern materials, subtle lighting, high-tech atmosphere
-- transparent-background feel on pure white background
-- centered object, enough white margin
-- no Korean text, no English text, no logo, no watermark
-- suitable for a public institution technology brochure
+Mandatory visual rules:
+- pure white background only, no black background, no dark square backdrop
+- bright transparent-background flat-icon look placed on white canvas
+- realistic futuristic color flat icon, semi-3D isometric product render feel
+- technology brochure style, not textbook illustration, not cartoon scene
+- centered single object or compact product group with generous white margin
+- clean blue / cyan / silver accents, subtle shadow only
+- no text, no letters, no Korean, no English, no logo, no watermark
 """
 
     result = client.images.generate(
@@ -269,7 +309,8 @@ Visual direction:
     )
 
     img_b64 = result.data[0].b64_json
-    return Image.open(BytesIO(base64.b64decode(img_b64))).convert("RGB")
+    raw = Image.open(BytesIO(base64.b64decode(img_b64))).convert("RGB")
+    return remove_dark_edge_background(raw)
 
 # =====================================================
 # 7. 그리기 유틸
@@ -341,7 +382,20 @@ def ip_date_text(ip: Dict[str, Any]) -> str:
 # 8. SMK 1페이지 이미지 생성
 # =====================================================
 
+def draw_text_centered(draw, box, text: str, font, fill, max_width: int, line_gap: int = 5):
+    x1, y1, x2, y2 = box
+    lines = wrap_text(draw, text, font, max_width)
+    total_h = len(lines) * getattr(font, "size", 18) + max(0, len(lines) - 1) * line_gap
+    y = y1 + max(0, (y2 - y1 - total_h) // 2)
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        tx = x1 + max(0, (x2 - x1 - (bbox[2] - bbox[0])) // 2)
+        draw.text((tx, y), line, font=font, fill=fill)
+        y += getattr(font, "size", 18) + line_gap
+
+
 def compose_smk(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str) -> Image.Image:
+    """A4 1페이지 SMK 이미지 렌더링. v4: 정렬/간격/폰트 크기 보정."""
     data = normalize_data(data)
     W, H = 1240, 1754
     img = Image.new("RGB", (W, H), "white")
@@ -354,117 +408,139 @@ def compose_smk(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image
     gray = (90, 90, 90)
     black = (30, 30, 30)
     line_gray = (190, 190, 190)
+    pale = (238, 248, 252)
+    tag_mint = (174, 220, 213)
+    tag_blue = (77, 145, 200)
 
-    f_logo = load_font(38, True)
-    f_title = load_font(48, True)
-    f_sub = load_font(25, False)
-    f_h = load_font(30, True)
-    f_m = load_font(23, True)
-    f_b = load_font(21, False)
-    f_s = load_font(18, False)
-    f_xs = load_font(16, False)
+    f_logo = load_font(30, True)
+    f_header = load_font(24, False)
+    f_title = load_font(44, True)
+    f_sub = load_font(24, False)
+    f_label = load_font(29, True)
+    f_tab = load_font(22, True)
+    f_body = load_font(20, False)
+    f_small = load_font(17, False)
+    f_tiny = load_font(15, False)
 
-    # 좌표 기준
     label_x = 50
     content_x = 190
-    content_w = 930
-    y_app = 320
-    y_overview = 590
-    y_comp = 900
-    y_ip = 1425
+    content_right = 1120
+    content_w = content_right - content_x
+
+    # section y positions
+    y_app = 315
+    y_overview = 610
+    y_comp = 910
+    y_ip = 1415
     y_contact = 1640
+
+    def section_label(text: str, top_y: int):
+        # 모든 섹션 라벨은 해당 섹션 상단 기준으로 정렬
+        d.line((55, top_y - 28, 110, top_y - 28), fill=blue, width=5)
+        d.text((label_x, top_y), text, font=f_label, fill=navy, spacing=5)
 
     # Header
     d.rectangle((0, 0, W, 260), fill=light)
     d.rectangle((0, 0, 150, 150), fill=navy)
-    d.text((32, 52), "PIUM", font=load_font(30, True), fill="white")
+    d.text((30, 52), "PIUM", font=f_logo, fill="white")
 
     header_line = f"PIUM Tech Offer  x  {data.get('university', '')} {data.get('department', '')}, {data.get('professor', '')} 교수"
-    d.text((180, 42), header_line, font=f_sub, fill=navy)
-
-    draw_wrapped(d, (180, 88), data.get("marketing_title", "기술명"), f_title, navy, 950, 6)
+    d.text((180, 42), header_line, font=f_header, fill=navy)
+    draw_wrapped(d, (180, 84), data.get("marketing_title", "기술명"), f_title, navy, 950, 5)
     d.text((180, 215), data.get("subtitle", ""), font=f_sub, fill=gray)
 
-    # Applications
-    draw_section_label(d, "적용\n분야\n제품", y_app + 18, f_h, navy)
+    # Applications - content area 기준 가운데 정렬
+    section_label("적용\n분야\n제품", y_app + 18)
     apps = data.get("applications", [])[:3]
-    xs = [270, 545, 820]
+    card_w, card_h = 220, 200
+    app_gap = 95
+    total_cards_w = card_w * 3 + app_gap * 2
+    first_x = content_x + (content_w - total_cards_w) // 2
+    xs = [first_x, first_x + card_w + app_gap, first_x + (card_w + app_gap) * 2]
+
     for i, app in enumerate(apps):
         x = xs[i]
-        d.rounded_rectangle((x, y_app, x + 210, y_app + 200), radius=30, outline=blue, width=4)
+        d.rounded_rectangle((x, y_app, x + card_w, y_app + card_h), radius=30, outline=blue, width=4)
         if i < len(app_imgs):
-            icon = fit_image(app_imgs[i], (138, 112))
-            img.paste(icon, (x + 36, y_app + 18))
-        draw_wrapped(d, (x + 22, y_app + 138), app.get("name", ""), f_xs, black, 166, 4)
+            icon = fit_image(remove_dark_edge_background(app_imgs[i]), (142, 112))
+            img.paste(icon, (x + (card_w - 142) // 2, y_app + 18))
+        draw_text_centered(
+            d,
+            (x + 18, y_app + 135, x + card_w - 18, y_app + card_h - 12),
+            app.get("name", ""),
+            f_small,
+            black,
+            card_w - 40,
+            3,
+        )
         if i < 2:
-            d.line((x + 220, y_app + 100, x + 260, y_app + 100), fill=(150, 190, 230), width=4)
+            x1 = x + card_w + 14
+            x2 = xs[i + 1] - 14
+            d.line((x1, y_app + card_h // 2, x2, y_app + card_h // 2), fill=(150, 190, 230), width=4)
 
     # Overview
-    draw_section_label(d, "기술\n개요", y_overview + 28, f_h, navy)
-    rep = fit_image(rep_img, (260, 210))
-    img.paste(rep, (230, y_overview + 15))
+    section_label("기술\n개요", y_overview + 18)
+    rep = fit_image(rep_img, (265, 215))
+    img.paste(rep, (225, y_overview + 8))
 
-    y = y_overview + 35
+    y = y_overview + 22
     for item in data.get("overview", [])[:3]:
-        y = draw_wrapped(d, (550, y), "› " + item, f_b, black, 600, 8) + 8
+        y = draw_wrapped(d, (545, y), "› " + item, f_body, black, 590, 7) + 6
 
     # Competitiveness
-    draw_section_label(d, "기술\n경쟁력", y_comp + 40, f_h, navy)
-    d.rounded_rectangle((content_x, y_comp, 1120, y_comp + 130), radius=60, fill=(238, 248, 252))
-    d.rounded_rectangle((230, y_comp + 30, 390, y_comp + 90), radius=30, outline=mint, width=4)
-    d.text((262, y_comp + 46), "기존기술", font=f_m, fill=black)
-    d.text((542, y_comp + 45), "▶  기술 차별성  ▶", font=f_m, fill=blue)
-    d.rounded_rectangle((940, y_comp + 30, 1100, y_comp + 90), radius=30, outline=blue, width=4)
-    d.text((972, y_comp + 46), "대상기술", font=f_m, fill=black)
-    d.line((620, y_comp + 155, 620, y_comp + 440), fill=(210, 210, 210), width=2)
+    section_label("기술\n경쟁력", y_comp + 28)
+    d.rounded_rectangle((content_x, y_comp, content_right, y_comp + 120), radius=58, fill=pale)
+    d.rounded_rectangle((230, y_comp + 27, 390, y_comp + 83), radius=28, outline=mint, width=4)
+    draw_text_centered(d, (230, y_comp + 27, 390, y_comp + 83), "기존기술", f_tab, black, 150, 2)
+    draw_text_centered(d, (485, y_comp + 40, 835, y_comp + 78), "▶  기술 차별성  ▶", f_tab, blue, 330, 2)
+    d.rounded_rectangle((940, y_comp + 27, 1100, y_comp + 83), radius=28, outline=blue, width=4)
+    draw_text_centered(d, (940, y_comp + 27, 1100, y_comp + 83), "대상기술", f_tab, black, 150, 2)
 
-    # 상단 bullets
-    y1 = y_comp + 165
+    divider_x = 620
+    d.line((divider_x, y_comp + 145, divider_x, y_comp + 435), fill=(210, 210, 210), width=2)
+
+    left_x, right_x = 210, 660
+    y1 = y_comp + 150
     for item in data.get("limitations", [])[:2]:
-        y1 = draw_wrapped(d, (210, y1), "● " + item, f_b, black, 380, 8) + 20
+        y1 = draw_wrapped(d, (left_x, y1), "● " + item, f_body, black, 380, 7) + 16
 
-    y2 = y_comp + 165
+    y2 = y_comp + 150
     for item in data.get("differentiation", [])[:2]:
-        y2 = draw_wrapped(d, (660, y2), "● " + item, f_b, black, 420, 8) + 20
+        y2 = draw_wrapped(d, (right_x, y2), "● " + item, f_body, black, 420, 7) + 16
 
-    # 하단 세부 내용
-    tag_y = y_comp + 330
-    d.rectangle((210, tag_y, 370, tag_y + 40), fill=(174, 220, 213))
-    d.text((225, tag_y + 8), "기술적 한계", font=f_s, fill="white")
-    d.rectangle((660, tag_y, 820, tag_y + 40), fill=(77, 145, 200))
-    d.text((675, tag_y + 8), "기술적 우위", font=f_s, fill="white")
+    tag_y = y_comp + 322
+    d.rectangle((left_x, tag_y, left_x + 160, tag_y + 40), fill=tag_mint)
+    draw_text_centered(d, (left_x, tag_y, left_x + 160, tag_y + 40), "기술적 한계", f_small, "white", 140, 2)
+    d.rectangle((right_x, tag_y, right_x + 160, tag_y + 40), fill=tag_blue)
+    draw_text_centered(d, (right_x, tag_y, right_x + 160, tag_y + 40), "기술적 우위", f_small, "white", 140, 2)
 
-    y = tag_y + 55
+    y = tag_y + 52
     tech_limits = data.get("technical_limitations") or data.get("limitations", [])
     for item in tech_limits[:2]:
-        y = draw_wrapped(d, (210, y), "▸ " + item, f_xs, black, 380, 5) + 2
+        y = draw_wrapped(d, (left_x, y), "▸ " + item, f_tiny, black, 380, 5) + 2
 
-    y = tag_y + 55
+    y = tag_y + 52
     for item in data.get("technical_advantages", [])[:2]:
-        y = draw_wrapped(d, (660, y), "▸ " + item, f_xs, navy, 430, 5) + 2
+        y = draw_wrapped(d, (right_x, y), "▸ " + item, f_tiny, navy, 430, 5) + 2
 
     # IP table
-    draw_section_label(d, "지식\n재산권\n현황", y_ip + 25, f_h, navy)
+    section_label("지식\n재산권\n현황", y_ip + 15)
     ip = data.get("ip", {})
-    d.rectangle((content_x, y_ip, 1120, y_ip + 70), fill=(235, 235, 235))
-
-    cols = [content_x, 500, 780, 1120]
+    cols = [content_x, 500, 780, content_right]
     headers = ["발명의 명칭", "출원번호\n(등록번호)", "출원일자\n(등록일자)"]
+
     for j in range(3):
-        d.rectangle((cols[j], y_ip, cols[j + 1], y_ip + 70), outline=line_gray)
-        draw_wrapped(d, (cols[j] + 45, y_ip + 15), headers[j], f_m, black, cols[j + 1] - cols[j] - 90, 2)
+        d.rectangle((cols[j], y_ip, cols[j + 1], y_ip + 70), fill=(235, 235, 235), outline=line_gray)
+        draw_text_centered(d, (cols[j] + 20, y_ip + 8, cols[j + 1] - 20, y_ip + 62), headers[j], f_tab, black, cols[j + 1] - cols[j] - 50, 2)
+        d.rectangle((cols[j], y_ip + 70, cols[j + 1], y_ip + 170), outline=line_gray)
 
-    d.rectangle((content_x, y_ip + 70, 1120, y_ip + 170), outline=line_gray)
-    for c in cols[1:-1]:
-        d.line((c, y_ip + 70, c, y_ip + 170), fill=line_gray, width=2)
-
-    draw_wrapped(d, (205, y_ip + 86), ip.get("title", data.get("original_title", "")), f_xs, black, 280, 4)
-    draw_wrapped(d, (520, y_ip + 88), ip_number_text(ip), f_b, black, 240, 5)
-    draw_wrapped(d, (800, y_ip + 88), ip_date_text(ip), f_b, black, 280, 5)
+    draw_wrapped(d, (205, y_ip + 88), ip.get("title", data.get("original_title", "")), f_tiny, black, 285, 4)
+    draw_wrapped(d, (525, y_ip + 87), ip_number_text(ip), f_body, black, 230, 5)
+    draw_wrapped(d, (805, y_ip + 87), ip_date_text(ip), f_body, black, 275, 5)
 
     # Contact
-    draw_section_label(d, "문의처", y_contact, f_h, navy)
-    d.text((content_x, y_contact + 8), contact, font=f_b, fill=black)
+    section_label("문의처", y_contact)
+    d.text((content_x, y_contact + 8), contact, font=f_body, fill=black)
 
     return img
 

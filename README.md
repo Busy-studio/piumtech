@@ -1,4 +1,12 @@
-# PIUM Tech Offer SMK 생성기
+# PIUM Tech Offer SMK 생성기 v4
+
+## 반영사항
+
+- 적용분야 이미지 프롬프트를 흰색 배경/미래형 컬러 플래티콘 스타일로 강화
+- 생성 이미지가 검정 배경으로 나오는 경우 가장자리와 연결된 어두운 배경을 자동으로 흰색 처리
+- 적용분야제품 카드, 기술개요, 기술경쟁력, 지식재산권 현황의 기준 x/y 좌표 재정렬
+- 본문/표/라벨 폰트 크기와 섹션 간격 조정
+- PDF 다운로드 및 수정용 PPTX 다운로드 유지
 
 ## Streamlit Cloud 설정
 
@@ -10,12 +18,10 @@
 OPENAI_API_KEY = "sk-본인_API키"
 ```
 
-## 포함 기능
+## 파일 구성
 
-- 특허 명세서 PDF 업로드
-- 대학교 선택 또는 수기입력
-- GPT 기반 SMK 텍스트 생성
-- 적용분야 이미지 생성
-- A4 1페이지 PDF 다운로드
-- 수정 가능한 PPTX 다운로드
-- JSON 직접 수정 후 PDF/PPTX 재렌더링
+- `app.py`
+- `requirements.txt`
+- `packages.txt`
+- `.streamlit/secrets.toml.example`
+- `.gitignore`
