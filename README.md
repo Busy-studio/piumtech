@@ -1,39 +1,21 @@
-# PNU SMK Generator - Streamlit
+# PIUM Tech Offer SMK 생성기
 
-특허 명세서 PDF를 업로드하면 OpenAI API를 활용해 1페이지 SMK 초안을 생성하고 PDF로 다운로드하는 Streamlit 앱입니다.
+## Streamlit Cloud 설정
 
-## GitHub 업로드 파일
-
-```text
-app.py
-requirements.txt
-packages.txt
-.gitignore
-.streamlit/secrets.toml.example
-```
-
-## Streamlit Cloud 배포 방법
-
-1. GitHub 저장소 생성
-2. 위 파일 업로드
-3. Streamlit Cloud에서 해당 저장소 연결
-4. App file path는 `app.py`로 설정
-5. Streamlit Cloud의 Settings > Secrets에 아래 값 입력
+1. 이 폴더의 파일을 GitHub 저장소에 업로드합니다.
+2. Streamlit Cloud에서 앱을 연결합니다.
+3. `Settings > Secrets`에 아래 값을 입력합니다.
 
 ```toml
 OPENAI_API_KEY = "sk-본인_API키"
 ```
 
-## 로컬 실행
+## 포함 기능
 
-```bash
-pip install -r requirements.txt
-mkdir -p .streamlit
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-streamlit run app.py
-```
-
-## 주의
-
-- API 키는 절대 GitHub에 올리지 마세요.
-- 한글 폰트는 `packages.txt`의 `fonts-nanum`으로 Streamlit Cloud에서 설치되도록 구성했습니다.
+- 특허 명세서 PDF 업로드
+- 대학교 선택 또는 수기입력
+- GPT 기반 SMK 텍스트 생성
+- 적용분야 이미지 생성
+- A4 1페이지 PDF 다운로드
+- 수정 가능한 PPTX 다운로드
+- JSON 직접 수정 후 PDF/PPTX 재렌더링
