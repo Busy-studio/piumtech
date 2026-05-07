@@ -540,23 +540,37 @@ def draw_bullets_fit(draw, x, y, items, size, bold, color, max_width, max_height
     return yy
 
 def get_visual_palette(university_logo: Image.Image | None) -> Dict[str, Tuple[int, int, int]]:
-    """대학 로고색은 헤더/보조 accent에만 사용하고, 본문 기술영역은 PIUM/Tech Blue 계열로 고정."""
+    """대학 로고 대표색을 전체 SMK accent로 사용하되, 본문 가독성은 검정/회색으로 유지한다.
+    PIUM 로고는 원본 색상을 그대로 두고, 주변 박스/라인만 대학색 계열 tint로 맞춘다.
+    """
     uni_theme = extract_logo_theme(university_logo)
     uni_primary = uni_theme["primary"]
-    pium_blue = (0, 86, 150)
-    tech_blue = (0, 112, 185)
-    tech_cyan = (0, 162, 190)
+
+    # 대학 대표색을 기본 accent로 사용
+    primary = uni_primary
+    primary_dark = ensure_dark(mix(uni_primary, (0, 0, 0), 0.18))
+    secondary = mix(primary, (0, 112, 185), 0.15)
+    accent = mix(primary, (0, 170, 190), 0.20)
+
+    # 너무 진하게 칠하지 않고, 같은 계열의 연한 tint로 박스/라인 구성
+    pale = mix(primary, (255, 255, 255), 0.90)
+    pale2 = mix(primary, (255, 255, 255), 0.94)
+    pale3 = mix(primary, (255, 255, 255), 0.97)
+    line = mix(primary, (255, 255, 255), 0.70)
+    line_soft = mix(primary, (255, 255, 255), 0.82)
+    table_header = mix(primary, (245, 247, 250), 0.82)
+
     return {
         "uni_primary": uni_primary,
-        "uni_pale": mix(uni_primary, (255, 255, 255), 0.90),
-        "uni_line": mix(uni_primary, (255, 255, 255), 0.72),
-        "pium_blue": pium_blue,
-        "tech_blue": tech_blue,
-        "tech_cyan": tech_cyan,
-        "tech_pale": (241, 248, 253),
-        "tech_pale2": (247, 251, 254),
-        "tech_line": (185, 213, 235),
-        "table_header": (232, 241, 248),
+        "uni_pale": pale,
+        "uni_line": line,
+        "pium_blue": primary,          # 기존 변수명 호환: 본문 accent도 대학색 계열 적용
+        "tech_blue": secondary,
+        "tech_cyan": accent,
+        "tech_pale": pale2,
+        "tech_pale2": pale3,
+        "tech_line": line_soft,
+        "table_header": table_header,
         "black": (28, 34, 43),
         "gray": (92, 99, 110),
     }
@@ -586,7 +600,7 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
 
     d.rectangle((0, 0, W, H), fill=(255,255,255))
 
-    # Header: 대학색은 헤더 배경과 타이틀에만 강하게 반영, PIUM 브랜드와 본문 기술영역은 블루 계열 고정
+    # Header: 대학 로고 대표색을 전체 accent의 기준으로 사용
     header_h = 246
     d.rectangle((0, 0, W, header_h), fill=uni_pale)
 
@@ -618,7 +632,7 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     X = 50
     CW = W - X*2
 
-    # Applications: 기술 제품 영역은 PIUM/Tech Blue 계열로 고정
+    # Applications: 대학 로고 대표색 계열 accent 적용
     app_y = 292
     app_h = 232
     draw_card(d, (X, app_y, X+CW, app_y+app_h), radius=24, fill=(255,255,255), outline=line, width=2)
