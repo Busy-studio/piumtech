@@ -23,10 +23,10 @@ IMAGE_MODEL_FIXED = "gpt-image-1"
 
 UNIVERSITIES = [
     "부산대학교", "국립부경대학교", "국립한국해양대학교", "동아대학교", "동의대학교", "동서대학교",
-    "동명대학교", "신라대학교", "울산대학교", "경남대학교", "경상국립대학교", "국립창원대학교", "인제대학교", "수기입력"
+    "동명대학교", "신라대학교", "울산대학교", "경남대학교", "경상대학교", "국립창원대학교", "인제대학교", "수기입력"
 ]
 
-st.set_page_config(page_title="PIUM Tech × 지역대학 SMK 생성기", page_icon="📄", layout="wide")
+st.set_page_config(page_title="PIUM Tech Brief 생성기", page_icon="📄", layout="wide")
 
 # -----------------------------------------------------
 # Client / Font
@@ -115,6 +115,19 @@ def get_logo_image(name: str) -> Image.Image | None:
 
 def get_pium_logo_image() -> Image.Image | None:
     return get_logo_image("PIUM")
+
+def get_piumlink_logo_image() -> Image.Image | None:
+    """logo.zip 또는 프로젝트 루트에서 PIUMLINK 로고를 불러온다."""
+    img = get_logo_image("PIUMLINK")
+    if img is not None:
+        return img
+    for path in ["PIUMLINK.png", os.path.join(os.getcwd(), "PIUMLINK.png"), os.path.join(os.path.dirname(__file__), "PIUMLINK.png") if "__file__" in globals() else "PIUMLINK.png"]:
+        if path and os.path.exists(path):
+            try:
+                return Image.open(path).convert("RGBA")
+            except Exception:
+                pass
+    return None
 
 def fit_logo_on_blue(src: Image.Image, size: Tuple[int, int], bg=(0,55,135), padding=16) -> Image.Image:
     """투명 로고를 파란 박스 안에 비율 유지로 삽입."""
@@ -429,46 +442,140 @@ def _crop_representative_from_first_page(page_img: Image.Image) -> Image.Image:
     return _smart_trim_visual(sub, threshold=248, padding=16)
 
 
+
+def _extract_best_embedded_image_from_page(doc: fitz.Document, page_index: int, prefer_square: bool = False, min_area: int = 15000) -> Image.Image | None:
+    """PDF 페이지 내부 이미지 중 실제 도면/QR에 해당하는 이미지를 직접 추출한다.
+    렌더링 페이지를 크롭하는 방식보다 전체 페이지가 잘못 들어가는 문제가 적다.
+    """
+    try:
+        page = doc[page_index]
+        candidates = []
+        for info in page.get_images(full=True):
+            xref = info[0]
+            try:
+                rects = page.get_image_rects(xref)
+                img_info = doc.extract_image(xref)
+                w, h = int(img_info.get("width", 0)), int(img_info.get("height", 0))
+                area = w * h
+                if area < min_area:
+                    continue
+                ratio = w / max(1, h)
+                if prefer_square and not (0.75 <= ratio <= 1.35):
+                    continue
+                if (not prefer_square) and (w < 120 or h < 90):
+                    continue
+                # 공보 대표도/도면은 보통 페이지 중하단 또는 도면 페이지 본문 영역에 있음.
+                pos_score = 0
+                if rects:
+                    r = rects[0]
+                    pos_score = float(r.y0) * 0.15 - float(r.x0) * 0.03
+                score = area + pos_score
+                candidates.append((score, xref, img_info))
+            except Exception:
+                continue
+        if not candidates:
+            return None
+        _, xref, img_info = max(candidates, key=lambda t: t[0])
+        im = Image.open(BytesIO(img_info["image"])).convert("RGB")
+        return _smart_trim_visual(im, threshold=248, padding=12)
+    except Exception:
+        return None
+
+
+def _parse_representative_figure_number(first_text: str) -> str | None:
+    m = re.search(r"대\s*표\s*도\s*[-–—]?\s*도\s*([0-9]+)", first_text)
+    return m.group(1) if m else None
+
 def extract_representative_drawing(pdf_path: str) -> Image.Image:
     """대표도면 추출.
-    1순위: 등록공보 1페이지에 표시된 '대표도' 실제 도면 영역
-    2순위: 대표도 번호가 별도 도면 페이지에만 있는 경우, 기존 방식으로 해당 페이지 렌더링 후 여백 제거
+    1순위: 1페이지에 포함된 대표도 이미지 객체를 직접 추출
+    2순위: '대 표 도 - 도N' 번호를 읽어 도면 페이지에서 해당 도면 이미지 객체를 추출
+    3순위: 기존 렌더링 크롭 fallback
     """
     doc = fitz.open(pdf_path)
     if len(doc) == 0:
         doc.close()
         return Image.new("RGB", (800, 600), "white")
 
-    # 대부분의 등록공보는 1페이지에 대표도 이미지가 이미 들어 있으므로 우선 처리
-    first_img = _render_page_image(doc, 0, zoom=3.2)
     first_text = doc[0].get_text("text")
-    if "대표도" in first_text or "대 표 도" in first_text or "대표 도" in first_text:
-        try:
-            cropped = _crop_representative_from_first_page(first_img)
-            doc.close()
-            return cropped
-        except Exception:
-            pass
 
-    # fallback: 도면 페이지 중 대표도/도면 관련 페이지를 찾되 전체 페이지가 들어가지 않도록 여백 제거
-    candidate = []
-    for i, page in enumerate(doc):
-        t = page.get_text("text")
-        if any(k in t for k in ["대표도", "대표 도", "도면1", "도 1", "도면 1"]):
-            candidate.append(i)
-    page_idx = candidate[-1] if candidate else max(len(doc)-1, 0)
-    img = _render_page_image(doc, page_idx, zoom=3.0)
+    # 1페이지에 대표도가 이미지 객체로 들어있는 경우가 가장 많음.
+    first_embedded = _extract_best_embedded_image_from_page(doc, 0, prefer_square=False, min_area=30000)
+    if first_embedded is not None and first_embedded.width > 160 and first_embedded.height > 120:
+        doc.close()
+        return first_embedded
+
+    # 대표도 번호를 기준으로 도면 페이지에서 실제 이미지 객체 추출
+    rep_no = _parse_representative_figure_number(first_text)
+    if rep_no:
+        patterns = [f"도면{rep_no}", f"도면 {rep_no}", f"도 {rep_no}"]
+        for i in range(1, len(doc)):
+            t = doc[i].get_text("text")
+            if any(p in t for p in patterns):
+                img = _extract_best_embedded_image_from_page(doc, i, prefer_square=False, min_area=25000)
+                if img is not None:
+                    doc.close()
+                    return img
+
+    # fallback: 도면 페이지 중 큰 이미지 객체 우선 추출
+    for i in range(1, len(doc)):
+        t = doc[i].get_text("text")
+        if "도면" in t or "도 " in t:
+            img = _extract_best_embedded_image_from_page(doc, i, prefer_square=False, min_area=25000)
+            if img is not None:
+                doc.close()
+                return img
+
+    # 최후 fallback: 1페이지 하단 크롭
+    first_img = _render_page_image(doc, 0, zoom=3.2)
     doc.close()
-    return _smart_trim_visual(img, threshold=248, padding=20)
+    return _crop_representative_from_first_page(first_img)
 
 
 def extract_qr_code_from_first_page(pdf_path: str) -> Image.Image | None:
-    """등록공보 1페이지 우측 상단 QR 코드만 추출한다."""
+    """등록공보 1페이지 우측 상단 QR 코드만 추출한다.
+    우선 PDF의 작은 정사각형 이미지 객체를 직접 찾고, 실패 시 렌더링 ROI 크롭으로 보정한다.
+    """
     try:
         doc = fitz.open(pdf_path)
         if len(doc) == 0:
+            doc.close()
             return None
-        img = _render_page_image(doc, 0, zoom=4.0)
+        page = doc[0]
+        page_rect = page.rect
+        candidates = []
+        for info in page.get_images(full=True):
+            xref = info[0]
+            try:
+                img_info = doc.extract_image(xref)
+                iw, ih = int(img_info.get("width", 0)), int(img_info.get("height", 0))
+                if iw < 35 or ih < 35:
+                    continue
+                ratio = iw / max(1, ih)
+                if not (0.75 <= ratio <= 1.35):
+                    continue
+                rects = page.get_image_rects(xref)
+                if not rects:
+                    continue
+                r = rects[0]
+                # 1페이지 우측 상단 영역의 정사각형 이미지 = QR 가능성 높음
+                if r.x0 < page_rect.width * 0.70 or r.y0 > page_rect.height * 0.18:
+                    continue
+                score = (page_rect.width - r.x0) + (page_rect.height * 0.18 - r.y0) + iw * ih * 0.01
+                candidates.append((score, img_info))
+            except Exception:
+                continue
+        if candidates:
+            _, img_info = max(candidates, key=lambda t: t[0])
+            qr = Image.open(BytesIO(img_info["image"])).convert("RGB")
+            qr = _smart_trim_visual(qr, threshold=245, padding=4)
+            side = max(qr.width, qr.height)
+            canvas = Image.new("RGB", (side, side), "white")
+            canvas.paste(qr, ((side-qr.width)//2, (side-qr.height)//2))
+            doc.close()
+            return canvas
+
+        img = _render_page_image(doc, 0, zoom=3.2)
         doc.close()
         return _crop_qr_by_fixed_area(img)
     except Exception:
@@ -857,7 +964,7 @@ def get_visual_palette(university_logo: Image.Image | None) -> Dict[str, Tuple[i
     }
 
 
-def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str, university_logo: Image.Image | None = None, pium_logo: Image.Image | None = None, qr_img: Image.Image | None = None) -> Image.Image:
+def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str, university_logo: Image.Image | None = None, pium_logo: Image.Image | None = None, qr_img: Image.Image | None = None, piumlink_logo: Image.Image | None = None) -> Image.Image:
     W, H = 1240, 1754
     im = Image.new("RGB", (W, H), "white")
     d = ImageDraw.Draw(im)
@@ -899,14 +1006,13 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     pium_canvas = make_transparent_logo_canvas(pium_logo, size=(150, 86), padding=4)
     im.paste(pium_canvas, (W-178, 34), pium_canvas)
 
-    # 등록공보 첫 페이지 QR: PIUM 로고 아래 우측 상단에 선택적으로 배치
-    if qr_img is not None:
-        qr_size = 74
-        qr_x = W - 140
-        qr_y = 124
-        d.rounded_rectangle((qr_x-6, qr_y-6, qr_x+qr_size+6, qr_y+qr_size+6), radius=8, fill=(255,255,255), outline=uni_line, width=1)
-        qr = fit_image(qr_img, (qr_size, qr_size), bg=(255,255,255), trim=True)
-        im.paste(qr, (qr_x, qr_y))
+    # 우측 상단: PIUM 로고 아래에는 등록공보 QR이 아니라 PIUMLINK 로고를 배치
+    if piumlink_logo is not None:
+        link_w, link_h = 190, 62
+        link_x, link_y = W - link_w - 34, 132
+        d.rounded_rectangle((link_x, link_y, link_x+link_w, link_y+link_h), radius=14, fill=(255,255,255), outline=uni_line, width=1)
+        link = make_transparent_logo_canvas(piumlink_logo, size=(link_w-16, link_h-12), padding=2)
+        im.paste(link, (link_x+8, link_y+6), link)
 
     header_x = 190
     header_w = W - header_x - 225
@@ -987,19 +1093,29 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     draw_section_title(d, X+28, y+20, "지식재산권 현황", f_sec, primary)
     table_x, table_y = X+28, y+66
     table_w, table_h = CW-56, 96
-    col1, col2, col3 = int(table_w*0.42), int(table_w*0.29), int(table_w*0.29)
+    col1, col2, col3, col4 = int(table_w*0.40), int(table_w*0.25), int(table_w*0.25), table_w - int(table_w*0.40) - int(table_w*0.25) - int(table_w*0.25)
     d.rectangle((table_x, table_y, table_x+table_w, table_y+38), fill=table_header, outline=line)
     d.rectangle((table_x, table_y+38, table_x+table_w, table_y+table_h), fill=(255,255,255), outline=line)
-    for xx in [table_x+col1, table_x+col1+col2]:
+    c1 = table_x + col1
+    c2 = c1 + col2
+    c3 = c2 + col3
+    for xx in [c1, c2, c3]:
         d.line((xx, table_y, xx, table_y+table_h), fill=line, width=1)
-    draw_centered_wrapped(d, (table_x+8, table_y+4, table_x+col1-8, table_y+38), "발명의 명칭", f_card, black, max_lines=1)
-    draw_centered_wrapped(d, (table_x+col1+8, table_y+3, table_x+col1+col2-8, table_y+38), "출원번호\n(등록번호)", load_font(15, False), black, max_lines=2, line_gap=1)
-    draw_centered_wrapped(d, (table_x+col1+col2+8, table_y+3, table_x+table_w-8, table_y+38), "출원일자\n(등록일자)", load_font(15, False), black, max_lines=2, line_gap=1)
-    draw_centered_wrapped(d, (table_x+16, table_y+42, table_x+col1-16, table_y+table_h-4), ip["title"] or data.get("original_title", ""), load_font(14, False), black, max_lines=2, line_gap=3)
+    draw_centered_wrapped(d, (table_x+8, table_y+4, c1-8, table_y+38), "발명의 명칭", f_card, black, max_lines=1)
+    draw_centered_wrapped(d, (c1+8, table_y+3, c2-8, table_y+38), "출원번호\n(등록번호)", load_font(15, False), black, max_lines=2, line_gap=1)
+    draw_centered_wrapped(d, (c2+8, table_y+3, c3-8, table_y+38), "출원일자\n(등록일자)", load_font(15, False), black, max_lines=2, line_gap=1)
+    draw_centered_wrapped(d, (c3+8, table_y+4, table_x+table_w-8, table_y+38), "바로가기", load_font(15, True), black, max_lines=1)
+    draw_centered_wrapped(d, (table_x+16, table_y+42, c1-16, table_y+table_h-4), ip["title"] or data.get("original_title", ""), load_font(13, False), black, max_lines=2, line_gap=3)
     num_text = f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number']
     date_text = f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date']
-    draw_centered_wrapped(d, (table_x+col1+12, table_y+42, table_x+col1+col2-12, table_y+table_h-4), num_text, load_font(18, False), black, max_lines=2, line_gap=3)
-    draw_centered_wrapped(d, (table_x+col1+col2+12, table_y+42, table_x+table_w-12, table_y+table_h-4), date_text, load_font(18, False), black, max_lines=2, line_gap=3)
+    draw_centered_wrapped(d, (c1+10, table_y+42, c2-10, table_y+table_h-4), num_text, load_font(16, False), black, max_lines=2, line_gap=3)
+    draw_centered_wrapped(d, (c2+10, table_y+42, c3-10, table_y+table_h-4), date_text, load_font(16, False), black, max_lines=2, line_gap=3)
+    if qr_img is not None:
+        qr_size = 56
+        qr = fit_image(qr_img, (qr_size, qr_size), bg=(255,255,255), trim=True)
+        qr_x = c3 + (col4 - qr_size)//2
+        qr_y = table_y + 39 + (table_h - 38 - qr_size)//2
+        im.paste(qr, (qr_x, qr_y))
 
     # Contact
     y = 1480
@@ -1056,7 +1172,7 @@ def add_rect(slide, x, y, w, h, fill=(255,255,255), outline=(220,230,242), radiu
     shp.line.width = Pt(1)
     return shp
 
-def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str, university_logo: Image.Image | None = None, pium_logo: Image.Image | None = None, qr_img: Image.Image | None = None) -> bytes:
+def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str, university_logo: Image.Image | None = None, pium_logo: Image.Image | None = None, qr_img: Image.Image | None = None, piumlink_logo: Image.Image | None = None) -> bytes:
     """PPTX 수정용: PDF 이미지와 동일한 박스형 레이아웃을 편집 가능한 텍스트/이미지 객체로 구성."""
     pal = get_visual_palette(university_logo)
     uni_primary = pal["uni_primary"]
@@ -1082,9 +1198,13 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     slide.shapes.add_picture(img_bytes(left_logo_box), px(0), px(0), width=px(145), height=px(145))
     pium_canvas = make_transparent_logo_canvas(pium_logo, size=(150,86), padding=4)
     slide.shapes.add_picture(img_bytes(pium_canvas), px(1062), px(34), width=px(150), height=px(86))
-    if qr_img is not None:
-        qr_box = fit_image(qr_img, (74,74), bg=(255,255,255), trim=True)
-        slide.shapes.add_picture(img_bytes(qr_box), px(1100), px(124), width=px(74), height=px(74))
+    if piumlink_logo is not None:
+        link_box = Image.new("RGBA", (190,62), (255,255,255,0))
+        link_draw = ImageDraw.Draw(link_box)
+        link_draw.rounded_rectangle((0,0,189,61), radius=14, fill=(255,255,255,255), outline=uni_line+(255,), width=1)
+        link = make_transparent_logo_canvas(piumlink_logo, size=(174,50), padding=2)
+        link_box.alpha_composite(link, (8,6))
+        slide.shapes.add_picture(img_bytes(link_box), px(1016), px(132), width=px(190), height=px(62))
     add_textbox(slide, 190, 45, 825, 32, f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} 교수", 13, False, uni_primary)
     add_textbox(slide, 190, 82, 825, 82, data.get("marketing_title", ""), 24, True, uni_primary)
     add_rect(slide, 190, 176, 825, 46, fill=(255,255,255), outline=uni_line, radius=True)
@@ -1130,12 +1250,26 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     add_textbox(slide, X+28, y+20, 300, 35, "지식재산권 현황", 15, True, primary)
     add_rect(slide, X+28, y+66, CW-56, 96, fill=(255,255,255), outline=line)
     add_rect(slide, X+28, y+66, CW-56, 38, fill=table_header, outline=line)
-    add_textbox(slide, X+46, y+74, 400, 30, "발명의 명칭", 11, True, black, align=PP_ALIGN.CENTER)
-    add_textbox(slide, X+485, y+70, 250, 36, "출원번호\n(등록번호)", 9, True, black, align=PP_ALIGN.CENTER)
-    add_textbox(slide, X+790, y+70, 250, 36, "출원일자\n(등록일자)", 9, True, black, align=PP_ALIGN.CENTER)
-    add_textbox(slide, X+46, y+116, 420, 48, ip["title"] or data.get("original_title",""), 8, False, black, align=PP_ALIGN.CENTER)
-    add_textbox(slide, X+485, y+116, 250, 48, f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number'], 10, False, black, align=PP_ALIGN.CENTER)
-    add_textbox(slide, X+790, y+116, 250, 48, f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date'], 10, False, black, align=PP_ALIGN.CENTER)
+    # 4열 표: 발명의 명칭 / 출원번호(등록번호) / 출원일자(등록일자) / 바로가기
+    table_x, table_y, table_w, table_h = X+28, y+66, CW-56, 96
+    col1, col2, col3 = int(table_w*0.40), int(table_w*0.25), int(table_w*0.25)
+    col4 = table_w - col1 - col2 - col3
+    # 구분선
+    for xx in [table_x+col1, table_x+col1+col2, table_x+col1+col2+col3]:
+        line_shape = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, px(xx), px(table_y), px(1), px(table_h))
+        line_shape.fill.solid(); line_shape.fill.fore_color.rgb = RGBColor(*line)
+        line_shape.line.fill.background()
+    add_textbox(slide, table_x+8, table_y+8, col1-16, 25, "발명의 명칭", 10, True, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, table_x+col1+8, table_y+4, col2-16, 34, "출원번호\n(등록번호)", 8.5, True, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, table_x+col1+col2+8, table_y+4, col3-16, 34, "출원일자\n(등록일자)", 8.5, True, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, table_x+col1+col2+col3+8, table_y+8, col4-16, 25, "바로가기", 9, True, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, table_x+12, table_y+46, col1-24, 44, ip["title"] or data.get("original_title",""), 7.5, False, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, table_x+col1+8, table_y+46, col2-16, 44, f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number'], 9, False, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, table_x+col1+col2+8, table_y+46, col3-16, 44, f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date'], 9, False, black, align=PP_ALIGN.CENTER)
+    if qr_img is not None:
+        qr_size = 54
+        qr_box = fit_image(qr_img, (qr_size, qr_size), bg=(255,255,255), trim=True)
+        slide.shapes.add_picture(img_bytes(qr_box), px(table_x+col1+col2+col3+(col4-qr_size)//2), px(table_y+41), width=px(qr_size), height=px(qr_size))
 
     y=1480
     add_rect(slide, X, y, CW, 78, fill=(255,255,255), outline=line, radius=True)
