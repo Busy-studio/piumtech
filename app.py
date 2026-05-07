@@ -5,159 +5,113 @@ import base64
 import tempfile
 from io import BytesIO
 from typing import Any, Dict, List, Tuple
-from collections import deque
 
-import fitz  # PyMuPDF
+import fitz
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageStat
 from openai import OpenAI
-
 from pptx import Presentation
 from pptx.util import Inches, Pt
-from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+from pptx.enum.shapes import MSO_SHAPE
 from pptx.dml.color import RGBColor
-from pptx.oxml.ns import qn
-
-# =====================================================
-# 1. 기본 설정
-# =====================================================
 
 TEXT_MODEL_FIXED = "gpt-4.1-mini"
 IMAGE_MODEL_FIXED = "gpt-image-1"
 
-UNIVERSITY_OPTIONS = [
-    "부산대학교",
-    "국립부경대학교",
-    "국립한국해양대학교",
-    "동아대학교",
-    "동의대학교",
-    "동서대학교",
-    "동명대학교",
-    "신라대학교",
-    "울산대학교",
-    "경남대학교",
-    "경상대학교",
-    "창원대학교",
-    "인제대학교",
-    "수기입력",
+UNIVERSITIES = [
+    "부산대학교", "국립부경대학교", "국립한국해양대학교", "동아대학교", "동의대학교", "동서대학교",
+    "동명대학교", "신라대학교", "울산대학교", "경남대학교", "경상대학교", "창원대학교", "인제대학교", "수기입력"
 ]
 
-st.set_page_config(
-    page_title="PIUM SMK 생성기",
-    page_icon="📄",
-    layout="wide",
-)
+st.set_page_config(page_title="PIUM Tech Brief 생성기", page_icon="📄", layout="wide")
 
-# =====================================================
-# 2. OpenAI Client
-# =====================================================
-
+# -----------------------------------------------------
+# Client / Font
+# -----------------------------------------------------
 @st.cache_resource
 def get_client() -> OpenAI:
     api_key = st.secrets.get("OPENAI_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
     api_key = str(api_key).strip().replace('"', '').replace("'", "")
-
     if not api_key.startswith("sk-"):
         st.error("OPENAI_API_KEY가 설정되지 않았습니다. Streamlit Secrets에 API 키를 입력하세요.")
         st.stop()
-
     return OpenAI(api_key=api_key)
 
-# =====================================================
-# 3. 한글 폰트
-# =====================================================
-
 @st.cache_resource
-def load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    font_paths = [
+def load_font(size: int, bold: bool = False):
+    paths = [
         "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf" if bold else "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
         "/usr/share/fonts/truetype/nanum/NanumBarunGothicBold.ttf" if bold else "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf",
         "/usr/share/fonts/truetype/nanum/NanumSquareB.ttf" if bold else "/usr/share/fonts/truetype/nanum/NanumSquareR.ttf",
         "/Library/Fonts/AppleGothic.ttf",
         "C:/Windows/Fonts/malgunbd.ttf" if bold else "C:/Windows/Fonts/malgun.ttf",
     ]
-
-    for path in font_paths:
-        if path and os.path.exists(path):
-            return ImageFont.truetype(path, size)
-
+    for p in paths:
+        if p and os.path.exists(p):
+            return ImageFont.truetype(p, size)
     return ImageFont.load_default()
 
-# =====================================================
-# 4. PDF 처리
-# =====================================================
-
+# -----------------------------------------------------
+# PDF extraction
+# -----------------------------------------------------
 def save_uploaded_file(uploaded_file) -> str:
     suffix = os.path.splitext(uploaded_file.name)[1] or ".pdf"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(uploaded_file.getbuffer())
         return tmp.name
 
-
 def extract_patent_text(pdf_path: str) -> str:
     doc = fitz.open(pdf_path)
-    texts = []
-    for page in doc:
-        texts.append(page.get_text("text"))
+    text = "\n".join([p.get_text("text") for p in doc])
     doc.close()
-    return "\n".join(texts)[:50000]
-
+    return text[:60000]
 
 def extract_representative_drawing(pdf_path: str) -> Image.Image:
     doc = fitz.open(pdf_path)
-
-    candidate_pages = []
+    candidate = []
     for i, page in enumerate(doc):
-        text = page.get_text("text")
-        if any(k in text for k in ["대표도", "대표 도", "도면1", "도 1"]):
-            candidate_pages.append(i)
-
-    page_idx = candidate_pages[-1] if candidate_pages else max(len(doc) - 1, 0)
+        t = page.get_text("text")
+        if any(k in t for k in ["대표도", "대표 도", "도면1", "도 1", "도면 1"]):
+            candidate.append(i)
+    page_idx = candidate[-1] if candidate else max(len(doc)-1, 0)
     page = doc[page_idx]
-    pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5), alpha=False)
+    pix = page.get_pixmap(matrix=fitz.Matrix(2.8, 2.8), alpha=False)
     img = Image.open(BytesIO(pix.tobytes("png"))).convert("RGB")
     doc.close()
     return img
 
-# =====================================================
-# 5. GPT 분석
-# =====================================================
-
+# -----------------------------------------------------
+# GPT
+# -----------------------------------------------------
 def safe_json_parse(text: str) -> Dict[str, Any]:
     text = text.strip()
     text = re.sub(r"^```json", "", text, flags=re.MULTILINE).strip()
     text = re.sub(r"^```", "", text, flags=re.MULTILINE).strip()
     text = re.sub(r"```$", "", text, flags=re.MULTILINE).strip()
-
-    match = re.search(r"\{.*\}", text, re.S)
-    if match:
-        text = match.group(0)
-
+    m = re.search(r"\{.*\}", text, re.S)
+    if m:
+        text = m.group(0)
     return json.loads(text)
 
-
-def analyze_patent_with_gpt(patent_text: str, university_name: str, department: str, professor: str) -> Dict[str, Any]:
+def analyze_patent_with_gpt(patent_text: str, university: str, department: str, professor: str) -> Dict[str, Any]:
     client = get_client()
-
     prompt = f"""
-너는 대학 기술마케팅자료(SMK) 작성 전문가다.
-아래 특허 명세서를 바탕으로 1페이지 SMK에 들어갈 내용을 생성하라.
+너는 대학 기술마케팅자료(SMK/Tech Brief) 작성 전문가다.
+아래 특허 명세서를 바탕으로 카드형 1페이지 기술소개자료에 들어갈 내용을 생성하라.
 
 작성 기준:
 - 해당 분야 4년제 대학 졸업자가 이해할 수 있는 수준
-- 일반 홍보문구가 아니라 기술이전용 SMK 문체
-- 짧은 개조식
-- 과장 금지
-- 기술명은 마케팅용 제목으로 자연스럽게 정리
-- 적용분야 제품은 3개
+- 기술이전/사업화 검토자가 빠르게 이해할 수 있는 개조식 문체
+- 과장 금지, 특허 명세서 근거 기반
+- 기술명은 마케팅용 제목으로 자연스럽게 정리하되 원 발명의 핵심을 유지
+- 적용분야 제품은 3개, 각 명칭은 짧게
 - 기술개요는 3개
+- 기술 차별성은 3개
 - 기존기술 한계는 2개
-- 대상기술 차별성은 2개
-- 기술적 한계는 기존기술 한계와 겹치더라도 별도 요약 2개로 반드시 작성
 - 기술적 우위는 2개
-- 등록특허공보인 경우 출원번호, 등록번호, 출원일자, 등록일자를 모두 추출
-- 번호/일자를 모르면 빈칸이 아니라 명세서에 있는 가장 가까운 정보를 추출
+- 지식재산권은 등록공보에 있는 출원번호/등록번호/출원일자/등록일자를 최대한 정확히 추출
+- 값이 없으면 빈 문자열로 둔다
 - 출력은 JSON만
 
 JSON 형식:
@@ -165,18 +119,17 @@ JSON 형식:
   "marketing_title": "",
   "subtitle": "",
   "original_title": "",
-  "university": "",
-  "department": "",
-  "professor": "",
+  "university": "{university}",
+  "department": "{department}",
+  "professor": "{professor}",
   "applications": [
     {{"name": "", "description": ""}},
     {{"name": "", "description": ""}},
     {{"name": "", "description": ""}}
   ],
   "overview": ["", "", ""],
+  "differentiation": ["", "", ""],
   "limitations": ["", ""],
-  "differentiation": ["", ""],
-  "technical_limitations": ["", ""],
   "technical_advantages": ["", ""],
   "ip": {{
     "title": "",
@@ -188,583 +141,377 @@ JSON 형식:
   }}
 }}
 
-대학교: {university_name}
+대학교: {university}
 학과: {department}
 교수명: {professor}
 
 특허 명세서:
 {patent_text}
 """
-
-    res = client.responses.create(
-        model=TEXT_MODEL_FIXED,
-        input=prompt,
-        temperature=0.2,
-    )
-
-    data = safe_json_parse(res.output_text)
-    data["university"] = university_name
-    data["department"] = department
-    data["professor"] = professor
-    return normalize_data(data)
-
-
-def normalize_data(data: Dict[str, Any]) -> Dict[str, Any]:
-    data.setdefault("marketing_title", "")
-    data.setdefault("subtitle", "")
-    data.setdefault("original_title", "")
-    data.setdefault("university", "")
-    data.setdefault("department", "")
-    data.setdefault("professor", "")
-    data.setdefault("applications", [])
-    data.setdefault("overview", [])
-    data.setdefault("limitations", [])
-    data.setdefault("differentiation", [])
-    data.setdefault("technical_limitations", data.get("limitations", []))
-    data.setdefault("technical_advantages", [])
-    data.setdefault("ip", {})
-
-    ip = data["ip"]
-    if "number" in ip and not ip.get("application_number") and not ip.get("registration_number"):
-        # 이전 버전 JSON 호환
-        ip["registration_number"] = ip.get("number", "")
-    if "date" in ip and not ip.get("application_date") and not ip.get("registration_date"):
-        ip["registration_date"] = ip.get("date", "")
-
-    ip.setdefault("title", data.get("original_title", ""))
-    ip.setdefault("application_number", "")
-    ip.setdefault("registration_number", "")
-    ip.setdefault("application_date", "")
-    ip.setdefault("registration_date", "")
-    ip.setdefault("applicant", "")
-    return data
-
-# =====================================================
-# 6. 적용분야 이미지 생성
-# =====================================================
-
-def remove_dark_edge_background(src: Image.Image, threshold: int = 70) -> Image.Image:
-    """생성 이미지가 검정/어두운 배경으로 나오는 경우, 가장자리와 연결된 어두운 배경만 흰색으로 치환합니다."""
-    img = src.convert("RGB")
-    w, h = img.size
-    pix = img.load()
-
-    visited = set()
-    q = deque()
-
-    def is_dark(x: int, y: int) -> bool:
-        r, g, b = pix[x, y]
-        return (0.2126 * r + 0.7152 * g + 0.0722 * b) < threshold
-
-    for x in range(w):
-        if is_dark(x, 0):
-            q.append((x, 0))
-        if is_dark(x, h - 1):
-            q.append((x, h - 1))
-    for y in range(h):
-        if is_dark(0, y):
-            q.append((0, y))
-        if is_dark(w - 1, y):
-            q.append((w - 1, y))
-
-    while q:
-        x, y = q.popleft()
-        if (x, y) in visited:
-            continue
-        visited.add((x, y))
-        if not is_dark(x, y):
-            continue
-        pix[x, y] = (255, 255, 255)
-        for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
-            if 0 <= nx < w and 0 <= ny < h and (nx, ny) not in visited:
-                if is_dark(nx, ny):
-                    q.append((nx, ny))
-
-    return img
-
+    res = client.responses.create(model=TEXT_MODEL_FIXED, input=prompt, temperature=0.2)
+    return safe_json_parse(res.output_text)
 
 def generate_application_image(title: str, desc: str) -> Image.Image:
     client = get_client()
-
     prompt = f"""
-Create one premium application-field visual for a Korean university technology-transfer SMK sheet.
+Create a premium technology brief application icon for a Korean university tech-transfer one-page brochure.
+Application: {title}
+Description: {desc}
 
-Application field: {title}
-Technical context: {desc}
-
-Mandatory visual rules:
-- pure white background only, no black background, no dark square backdrop
-- bright transparent-background flat-icon look placed on white canvas
-- realistic futuristic color flat icon, semi-3D isometric product render feel
-- technology brochure style, not textbook illustration, not cartoon scene
-- centered single object or compact product group with generous white margin
-- clean blue / cyan / silver accents, subtle shadow only
-- no text, no letters, no Korean, no English, no logo, no watermark
+Visual style requirements:
+- white background only, no black background, no dark vignette, no gradient backdrop
+- modern futuristic colored flat-icon mixed with subtle realistic 3D detail
+- clean vector-like isometric composition
+- blue, cyan, white, light gray accents
+- professional public-sector technology marketing style
+- centered object, generous white margin
+- no text, no letters, no logos, no watermark
 """
-
-    result = client.images.generate(
-        model=IMAGE_MODEL_FIXED,
-        prompt=prompt,
-        size="1024x1024",
-    )
-
+    result = client.images.generate(model=IMAGE_MODEL_FIXED, prompt=prompt, size="1024x1024")
     img_b64 = result.data[0].b64_json
-    raw = Image.open(BytesIO(base64.b64decode(img_b64))).convert("RGB")
-    return remove_dark_edge_background(raw)
+    img = Image.open(BytesIO(base64.b64decode(img_b64))).convert("RGB")
+    return clean_dark_background(img)
 
-# =====================================================
-# 7. 그리기 유틸
-# =====================================================
+# -----------------------------------------------------
+# Image utilities
+# -----------------------------------------------------
+def clean_dark_background(img: Image.Image) -> Image.Image:
+    """검정/짙은 배경이 섞여 나온 경우 흰 배경으로 완화."""
+    img = img.convert("RGB")
+    w, h = img.size
+    border = Image.new("RGB", (w*2 + h*2, 1), "white")
+    px = []
+    for x in range(w):
+        px.append(img.getpixel((x, 0)))
+        px.append(img.getpixel((x, h-1)))
+    for y in range(h):
+        px.append(img.getpixel((0, y)))
+        px.append(img.getpixel((w-1, y)))
+    avg = sum((r+g+b)/3 for r,g,b in px) / max(len(px), 1)
+    if avg > 130:
+        return img
+    data = []
+    for r,g,b in img.getdata():
+        brightness = (r+g+b)/3
+        # 매우 어두운 배경만 흰색으로 치환, 오브젝트 음영은 최대한 보존
+        if brightness < 42 and max(r,g,b) - min(r,g,b) < 35:
+            data.append((255,255,255))
+        else:
+            data.append((r,g,b))
+    img.putdata(data)
+    return img
 
-def wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_width: int) -> List[str]:
+def fit_image(src: Image.Image, size: Tuple[int, int], bg=(255,255,255)) -> Image.Image:
+    im = src.copy().convert("RGB")
+    im.thumbnail(size)
+    canvas = Image.new("RGB", size, bg)
+    x = (size[0] - im.width)//2
+    y = (size[1] - im.height)//2
+    canvas.paste(im, (x,y))
+    return canvas
+
+def wrap_text(draw: ImageDraw.ImageDraw, text: str, font, max_width: int, max_lines: int = None) -> List[str]:
     lines = []
     for raw in str(text).split("\n"):
         raw = raw.strip()
         if not raw:
             lines.append("")
             continue
-
         line = ""
         for ch in list(raw):
             test = line + ch
-            width = draw.textbbox((0, 0), test, font=font)[2]
-            if width <= max_width:
+            if draw.textbbox((0,0), test, font=font)[2] <= max_width:
                 line = test
             else:
                 if line:
                     lines.append(line)
                 line = ch
+                if max_lines and len(lines) >= max_lines:
+                    break
+        if max_lines and len(lines) >= max_lines:
+            break
         if line:
             lines.append(line)
+    if max_lines and len(lines) > max_lines:
+        lines = lines[:max_lines]
     return lines
 
-
-def draw_wrapped(draw, xy, text, font, fill, max_width, line_gap=8):
+def draw_wrapped(draw, xy, text, font, fill, max_width, line_gap=7, max_lines=None) -> int:
     x, y = xy
-    for line in wrap_text(draw, text, font, max_width):
+    lines = wrap_text(draw, text, font, max_width, max_lines=max_lines)
+    for i, line in enumerate(lines):
+        if max_lines and i == max_lines-1 and len(wrap_text(draw, text, font, max_width)) > max_lines:
+            line = line[:-1] + "…"
         draw.text((x, y), line, font=font, fill=fill)
         y += getattr(font, "size", 18) + line_gap
     return y
 
+def draw_section_title(draw, x, y, title, font, color):
+    draw.rounded_rectangle((x, y, x+10, y+34), radius=4, fill=color)
+    draw.text((x+22, y+2), title, font=font, fill=color)
 
-def fit_image(img: Image.Image, size: Tuple[int, int]) -> Image.Image:
-    img = img.copy().convert("RGB")
-    img.thumbnail(size)
-    canvas = Image.new("RGB", size, "white")
-    x = (size[0] - img.width) // 2
-    y = (size[1] - img.height) // 2
-    canvas.paste(img, (x, y))
-    return canvas
+def draw_card(draw, xyxy, radius=24, fill=(255,255,255), outline=(220,230,242), width=2):
+    draw.rounded_rectangle(xyxy, radius=radius, fill=fill, outline=outline, width=width)
 
+def bullet_list(draw, x, y, items, font, color, max_width, bullet="•", line_gap=7, item_gap=10, max_lines_per_item=3):
+    for item in items:
+        item = str(item).strip()
+        if not item:
+            continue
+        draw.text((x, y), bullet, font=font, fill=color)
+        y = draw_wrapped(draw, (x+24, y), item, font, color, max_width-24, line_gap, max_lines=max_lines_per_item) + item_gap
+    return y
 
-def draw_section_label(d, text: str, y: int, font, blue):
-    # 오른쪽 콘텐츠 상단과 최대한 맞춰 보이도록 기준선 정렬
-    d.line((55, y - 30, 110, y - 30), fill=blue, width=5)
-    d.text((50, y), text, font=font, fill=blue, spacing=6)
+# -----------------------------------------------------
+# New Box Layout Rendering
+# -----------------------------------------------------
+def normalize_ip(ip: Dict[str, Any]) -> Dict[str, str]:
+    return {
+        "title": str(ip.get("title") or ip.get("name") or ""),
+        "application_number": str(ip.get("application_number") or ip.get("app_no") or ""),
+        "registration_number": str(ip.get("registration_number") or ip.get("reg_no") or ""),
+        "application_date": str(ip.get("application_date") or ip.get("app_date") or ""),
+        "registration_date": str(ip.get("registration_date") or ip.get("reg_date") or ""),
+        "applicant": str(ip.get("applicant") or ""),
+    }
 
-
-def ip_number_text(ip: Dict[str, Any]) -> str:
-    app = ip.get("application_number", "")
-    reg = ip.get("registration_number", "")
-    if app and reg:
-        return f"{app}\n({reg})"
-    return app or reg
-
-
-def ip_date_text(ip: Dict[str, Any]) -> str:
-    app = ip.get("application_date", "")
-    reg = ip.get("registration_date", "")
-    if app and reg:
-        return f"{app}\n({reg})"
-    return app or reg
-
-# =====================================================
-# 8. SMK 1페이지 이미지 생성
-# =====================================================
-
-def draw_text_centered(draw, box, text: str, font, fill, max_width: int, line_gap: int = 5):
-    x1, y1, x2, y2 = box
-    lines = wrap_text(draw, text, font, max_width)
-    total_h = len(lines) * getattr(font, "size", 18) + max(0, len(lines) - 1) * line_gap
-    y = y1 + max(0, (y2 - y1 - total_h) // 2)
-    for line in lines:
-        bbox = draw.textbbox((0, 0), line, font=font)
-        tx = x1 + max(0, (x2 - x1 - (bbox[2] - bbox[0])) // 2)
-        draw.text((tx, y), line, font=font, fill=fill)
-        y += getattr(font, "size", 18) + line_gap
-
-
-def compose_smk(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str) -> Image.Image:
-    """A4 1페이지 SMK 이미지 렌더링. v4: 정렬/간격/폰트 크기 보정."""
-    data = normalize_data(data)
+def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str) -> Image.Image:
     W, H = 1240, 1754
-    img = Image.new("RGB", (W, H), "white")
-    d = ImageDraw.Draw(img)
+    im = Image.new("RGB", (W, H), "white")
+    d = ImageDraw.Draw(im)
 
-    navy = (0, 52, 140)
-    blue = (24, 90, 180)
-    light = (235, 240, 247)
-    mint = (0, 170, 160)
-    gray = (90, 90, 90)
-    black = (30, 30, 30)
-    line_gray = (190, 190, 190)
-    pale = (238, 248, 252)
-    tag_mint = (174, 220, 213)
-    tag_blue = (77, 145, 200)
+    navy = (0, 55, 135)
+    blue = (24, 92, 180)
+    sky = (235, 243, 250)
+    sky2 = (245, 249, 252)
+    cyan = (0, 165, 180)
+    black = (28, 34, 43)
+    gray = (92, 99, 110)
+    line = (209, 220, 232)
 
-    f_logo = load_font(30, True)
-    f_header = load_font(24, False)
-    f_title = load_font(44, True)
-    f_sub = load_font(24, False)
-    f_label = load_font(29, True)
-    f_tab = load_font(22, True)
+    f_logo = load_font(34, True)
+    f_kicker = load_font(25, False)
+    f_title = load_font(45, True)
+    f_sub = load_font(25, False)
+    f_sec = load_font(26, True)
+    f_card = load_font(21, True)
     f_body = load_font(20, False)
     f_small = load_font(17, False)
     f_tiny = load_font(15, False)
 
-    label_x = 50
-    content_x = 190
-    content_right = 1120
-    content_w = content_right - content_x
+    # Background accents
+    d.rectangle((0, 0, W, H), fill=(255,255,255))
+    d.rectangle((0, 0, W, 278), fill=sky)
+    d.rectangle((0, 0, 155, 155), fill=navy)
+    d.text((34, 58), "PIUM", font=f_logo, fill="white")
+    d.text((190, 44), f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} 교수", font=f_kicker, fill=navy)
+    draw_wrapped(d, (190, 92), data.get("marketing_title", "기술명"), f_title, navy, 955, 5, max_lines=2)
+    draw_wrapped(d, (190, 214), data.get("subtitle", ""), f_sub, gray, 950, 5, max_lines=1)
 
-    # section y positions
-    y_app = 315
-    y_overview = 610
-    y_comp = 910
-    y_ip = 1415
-    y_contact = 1640
+    M = 70
+    X = 90
+    CW = W - X*2
 
-    def section_label(text: str, top_y: int):
-        # 모든 섹션 라벨은 해당 섹션 상단 기준으로 정렬
-        d.line((55, top_y - 28, 110, top_y - 28), fill=blue, width=5)
-        d.text((label_x, top_y), text, font=f_label, fill=navy, spacing=5)
-
-    # Header
-    d.rectangle((0, 0, W, 260), fill=light)
-    d.rectangle((0, 0, 150, 150), fill=navy)
-    d.text((30, 52), "PIUM", font=f_logo, fill="white")
-
-    header_line = f"PIUM Tech Offer  x  {data.get('university', '')} {data.get('department', '')}, {data.get('professor', '')} 교수"
-    d.text((180, 42), header_line, font=f_header, fill=navy)
-    draw_wrapped(d, (180, 84), data.get("marketing_title", "기술명"), f_title, navy, 950, 5)
-    d.text((180, 215), data.get("subtitle", ""), font=f_sub, fill=gray)
-
-    # Applications - content area 기준 가운데 정렬
-    section_label("적용\n분야\n제품", y_app + 18)
+    # Applications section
+    y = 320
+    draw_section_title(d, X, y, "적용분야 / 제품", f_sec, navy)
+    card_y = y + 52
+    gap = 28
+    card_w = (CW - gap*2)//3
+    card_h = 230
     apps = data.get("applications", [])[:3]
-    card_w, card_h = 220, 200
-    app_gap = 95
-    total_cards_w = card_w * 3 + app_gap * 2
-    first_x = content_x + (content_w - total_cards_w) // 2
-    xs = [first_x, first_x + card_w + app_gap, first_x + (card_w + app_gap) * 2]
-
-    for i, app in enumerate(apps):
-        x = xs[i]
-        d.rounded_rectangle((x, y_app, x + card_w, y_app + card_h), radius=30, outline=blue, width=4)
+    for i in range(3):
+        x = X + i*(card_w+gap)
+        draw_card(d, (x, card_y, x+card_w, card_y+card_h), radius=26, fill=(255,255,255), outline=(196,216,235), width=2)
         if i < len(app_imgs):
-            icon = fit_image(remove_dark_edge_background(app_imgs[i]), (142, 112))
-            img.paste(icon, (x + (card_w - 142) // 2, y_app + 18))
-        draw_text_centered(
-            d,
-            (x + 18, y_app + 135, x + card_w - 18, y_app + card_h - 12),
-            app.get("name", ""),
-            f_small,
-            black,
-            card_w - 40,
-            3,
-        )
-        if i < 2:
-            x1 = x + card_w + 14
-            x2 = xs[i + 1] - 14
-            d.line((x1, y_app + card_h // 2, x2, y_app + card_h // 2), fill=(150, 190, 230), width=4)
+            icon = fit_image(app_imgs[i], (150, 118), bg=(255,255,255))
+            im.paste(icon, (x + (card_w-150)//2, card_y+22))
+        app = apps[i] if i < len(apps) else {"name":"", "description":""}
+        draw_wrapped(d, (x+24, card_y+150), app.get("name", ""), f_card, black, card_w-48, 5, max_lines=2)
 
-    # Overview
-    section_label("기술\n개요", y_overview + 18)
-    rep = fit_image(rep_img, (265, 215))
-    img.paste(rep, (225, y_overview + 8))
+    # Overview / differentiation
+    y = 625
+    left_x = X
+    right_x = X + CW//2 + 15
+    box_w = CW//2 - 15
+    box_h = 325
+    draw_card(d, (left_x, y, left_x+box_w, y+box_h), radius=24, fill=sky2, outline=line, width=2)
+    draw_card(d, (right_x, y, right_x+box_w, y+box_h), radius=24, fill=sky2, outline=line, width=2)
+    draw_section_title(d, left_x+28, y+25, "기술개요", f_sec, navy)
+    draw_section_title(d, right_x+28, y+25, "핵심 차별성", f_sec, navy)
+    bullet_list(d, left_x+34, y+82, data.get("overview", [])[:3], f_body, black, box_w-68, bullet="›", max_lines_per_item=3)
+    bullet_list(d, right_x+34, y+82, data.get("differentiation", [])[:3], f_body, black, box_w-68, bullet="›", max_lines_per_item=3)
 
-    y = y_overview + 22
-    for item in data.get("overview", [])[:3]:
-        y = draw_wrapped(d, (545, y), "› " + item, f_body, black, 590, 7) + 6
+    # Drawing / competitiveness
+    y = 990
+    draw_card(d, (left_x, y, left_x+box_w, y+365), radius=24, fill=(255,255,255), outline=line, width=2)
+    draw_card(d, (right_x, y, right_x+box_w, y+365), radius=24, fill=(255,255,255), outline=line, width=2)
+    draw_section_title(d, left_x+28, y+25, "대표도면", f_sec, navy)
+    draw_section_title(d, right_x+28, y+25, "기술 경쟁력", f_sec, navy)
+    rep = fit_image(rep_img, (box_w-90, 255), bg=(255,255,255))
+    im.paste(rep, (left_x+45, y+85))
 
-    # Competitiveness
-    section_label("기술\n경쟁력", y_comp + 28)
-    d.rounded_rectangle((content_x, y_comp, content_right, y_comp + 120), radius=58, fill=pale)
-    d.rounded_rectangle((230, y_comp + 27, 390, y_comp + 83), radius=28, outline=mint, width=4)
-    draw_text_centered(d, (230, y_comp + 27, 390, y_comp + 83), "기존기술", f_tab, black, 150, 2)
-    draw_text_centered(d, (485, y_comp + 40, 835, y_comp + 78), "▶  기술 차별성  ▶", f_tab, blue, 330, 2)
-    d.rounded_rectangle((940, y_comp + 27, 1100, y_comp + 83), radius=28, outline=blue, width=4)
-    draw_text_centered(d, (940, y_comp + 27, 1100, y_comp + 83), "대상기술", f_tab, black, 150, 2)
+    # limitations / advantages subcards
+    sub_y = y + 80
+    d.rounded_rectangle((right_x+32, sub_y, right_x+box_w-32, sub_y+105), radius=16, fill=(247,250,252), outline=(225,233,242), width=1)
+    d.text((right_x+52, sub_y+16), "기존기술 한계", font=f_card, fill=cyan)
+    bullet_list(d, right_x+52, sub_y+50, data.get("limitations", [])[:2], f_small, black, box_w-105, bullet="•", line_gap=5, item_gap=4, max_lines_per_item=2)
 
-    divider_x = 620
-    d.line((divider_x, y_comp + 145, divider_x, y_comp + 435), fill=(210, 210, 210), width=2)
+    sub2_y = sub_y + 130
+    d.rounded_rectangle((right_x+32, sub2_y, right_x+box_w-32, sub2_y+145), radius=16, fill=(243,248,253), outline=(225,233,242), width=1)
+    d.text((right_x+52, sub2_y+16), "기술적 우위", font=f_card, fill=blue)
+    bullet_list(d, right_x+52, sub2_y+50, data.get("technical_advantages", [])[:2], f_small, navy, box_w-105, bullet="▸", line_gap=5, item_gap=7, max_lines_per_item=2)
 
-    left_x, right_x = 210, 660
-    y1 = y_comp + 150
-    for item in data.get("limitations", [])[:2]:
-        y1 = draw_wrapped(d, (left_x, y1), "● " + item, f_body, black, 380, 7) + 16
+    # IP / contact
+    y = 1395
+    ip = normalize_ip(data.get("ip", {}))
+    draw_card(d, (X, y, X+CW, y+205), radius=22, fill=sky2, outline=line, width=2)
+    draw_section_title(d, X+28, y+22, "지식재산권 현황", f_sec, navy)
+    table_x, table_y = X+28, y+70
+    table_w, table_h = CW-56, 100
+    col1, col2, col3 = int(table_w*0.42), int(table_w*0.29), int(table_w*0.29)
+    d.rectangle((table_x, table_y, table_x+table_w, table_y+40), fill=(232,235,239), outline=(195,202,210))
+    d.rectangle((table_x, table_y+40, table_x+table_w, table_y+table_h), fill=(255,255,255), outline=(195,202,210))
+    for xx in [table_x+col1, table_x+col1+col2]:
+        d.line((xx, table_y, xx, table_y+table_h), fill=(195,202,210), width=1)
+    d.text((table_x+18, table_y+9), "발명의 명칭", font=f_card, fill=black)
+    d.text((table_x+col1+18, table_y+4), "출원번호\n(등록번호)", font=f_small, fill=black, spacing=2)
+    d.text((table_x+col1+col2+18, table_y+4), "출원일자\n(등록일자)", font=f_small, fill=black, spacing=2)
+    draw_wrapped(d, (table_x+18, table_y+54), ip["title"] or data.get("original_title", ""), f_tiny, black, col1-35, 4, max_lines=2)
+    num_text = f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number']
+    date_text = f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date']
+    draw_wrapped(d, (table_x+col1+18, table_y+54), num_text, f_body, black, col2-36, 4, max_lines=2)
+    draw_wrapped(d, (table_x+col1+col2+18, table_y+54), date_text, f_body, black, col3-36, 4, max_lines=2)
 
-    y2 = y_comp + 150
-    for item in data.get("differentiation", [])[:2]:
-        y2 = draw_wrapped(d, (right_x, y2), "● " + item, f_body, black, 420, 7) + 16
+    y = 1625
+    d.rounded_rectangle((X, y, X+CW, y+75), radius=20, fill=(255,255,255), outline=line, width=2)
+    d.text((X+28, y+22), "문의처", font=f_sec, fill=navy)
+    draw_wrapped(d, (X+150, y+25), contact, f_body, black, CW-180, 4, max_lines=1)
 
-    tag_y = y_comp + 322
-    d.rectangle((left_x, tag_y, left_x + 160, tag_y + 40), fill=tag_mint)
-    draw_text_centered(d, (left_x, tag_y, left_x + 160, tag_y + 40), "기술적 한계", f_small, "white", 140, 2)
-    d.rectangle((right_x, tag_y, right_x + 160, tag_y + 40), fill=tag_blue)
-    draw_text_centered(d, (right_x, tag_y, right_x + 160, tag_y + 40), "기술적 우위", f_small, "white", 140, 2)
+    return im
 
-    y = tag_y + 52
-    tech_limits = data.get("technical_limitations") or data.get("limitations", [])
-    for item in tech_limits[:2]:
-        y = draw_wrapped(d, (left_x, y), "▸ " + item, f_tiny, black, 380, 5) + 2
-
-    y = tag_y + 52
-    for item in data.get("technical_advantages", [])[:2]:
-        y = draw_wrapped(d, (right_x, y), "▸ " + item, f_tiny, navy, 430, 5) + 2
-
-    # IP table
-    section_label("지식\n재산권\n현황", y_ip + 15)
-    ip = data.get("ip", {})
-    cols = [content_x, 500, 780, content_right]
-    headers = ["발명의 명칭", "출원번호\n(등록번호)", "출원일자\n(등록일자)"]
-
-    for j in range(3):
-        d.rectangle((cols[j], y_ip, cols[j + 1], y_ip + 70), fill=(235, 235, 235), outline=line_gray)
-        draw_text_centered(d, (cols[j] + 20, y_ip + 8, cols[j + 1] - 20, y_ip + 62), headers[j], f_tab, black, cols[j + 1] - cols[j] - 50, 2)
-        d.rectangle((cols[j], y_ip + 70, cols[j + 1], y_ip + 170), outline=line_gray)
-
-    draw_wrapped(d, (205, y_ip + 88), ip.get("title", data.get("original_title", "")), f_tiny, black, 285, 4)
-    draw_wrapped(d, (525, y_ip + 87), ip_number_text(ip), f_body, black, 230, 5)
-    draw_wrapped(d, (805, y_ip + 87), ip_date_text(ip), f_body, black, 275, 5)
-
-    # Contact
-    section_label("문의처", y_contact)
-    d.text((content_x, y_contact + 8), contact, font=f_body, fill=black)
-
-    return img
-
-# =====================================================
-# 9. PDF / PPTX 저장
-# =====================================================
-
+# -----------------------------------------------------
+# PDF / PPTX
+# -----------------------------------------------------
 def make_pdf_bytes_from_image(img: Image.Image) -> bytes:
     a4_w, a4_h = 1240, 1754
     page = Image.new("RGB", (a4_w, a4_h), "white")
     img = img.convert("RGB")
     img.thumbnail((a4_w, a4_h))
-    x = (a4_w - img.width) // 2
-    y = (a4_h - img.height) // 2
-    page.paste(img, (x, y))
-
+    page.paste(img, ((a4_w-img.width)//2, (a4_h-img.height)//2))
     bio = BytesIO()
     page.save(bio, "PDF", resolution=150.0)
     return bio.getvalue()
 
-
-def pil_to_stream(img: Image.Image, fmt: str = "PNG") -> BytesIO:
+def img_bytes(img: Image.Image) -> BytesIO:
     bio = BytesIO()
-    img.convert("RGB").save(bio, format=fmt)
+    img.save(bio, format="PNG")
     bio.seek(0)
     return bio
 
+def px(x):
+    return Inches(x / 124.0)  # 1240px -> 10in
+
+def add_textbox(slide, x, y, w, h, text, size=14, bold=False, color=(30,30,30), align=PP_ALIGN.LEFT):
+    box = slide.shapes.add_textbox(px(x), px(y), px(w), px(h))
+    tf = box.text_frame
+    tf.clear()
+    tf.word_wrap = True
+    tf.vertical_anchor = MSO_ANCHOR.TOP
+    p = tf.paragraphs[0]
+    p.alignment = align
+    run = p.add_run()
+    run.text = str(text)
+    run.font.name = "Malgun Gothic"
+    run.font.size = Pt(size)
+    run.font.bold = bold
+    run.font.color.rgb = RGBColor(*color)
+    return box
+
+def add_rect(slide, x, y, w, h, fill=(255,255,255), outline=(220,230,242), radius=False):
+    shape_type = MSO_SHAPE.ROUNDED_RECTANGLE if radius else MSO_SHAPE.RECTANGLE
+    shp = slide.shapes.add_shape(shape_type, px(x), px(y), px(w), px(h))
+    shp.fill.solid(); shp.fill.fore_color.rgb = RGBColor(*fill)
+    shp.line.color.rgb = RGBColor(*outline)
+    shp.line.width = Pt(1)
+    return shp
 
 def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str) -> bytes:
-    """수정 가능한 텍스트 객체 중심 PPTX 생성. 이미지와 도형은 별도 객체로 삽입."""
-    data = normalize_data(data)
     prs = Presentation()
-    prs.slide_width = Inches(8.27)   # A4 portrait width
-    prs.slide_height = Inches(11.69) # A4 portrait height
+    prs.slide_width = Inches(10)
+    prs.slide_height = Inches(14.145)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
 
-    W, H = 1240, 1754
-    SW, SH = 8.27, 11.69
+    navy=(0,55,135); blue=(24,92,180); sky=(235,243,250); sky2=(245,249,252); black=(28,34,43); gray=(92,99,110); line=(209,220,232); cyan=(0,165,180)
+    add_rect(slide, 0, 0, 1240, 278, fill=sky, outline=sky)
+    add_rect(slide, 0, 0, 155, 155, fill=navy, outline=navy)
+    add_textbox(slide, 34, 58, 100, 45, "PIUM", 20, True, (255,255,255))
+    add_textbox(slide, 190, 44, 980, 38, f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} 교수", 14, False, navy)
+    add_textbox(slide, 190, 92, 955, 105, data.get("marketing_title", ""), 26, True, navy)
+    add_textbox(slide, 190, 214, 950, 38, data.get("subtitle", ""), 15, False, gray)
 
-    def X(px): return Inches(px / W * SW)
-    def Y(px): return Inches(px / H * SH)
-    def CX(px): return Inches(px / W * SW)
-    def CY(px): return Inches(px / H * SH)
-
-    navy = RGBColor(0, 52, 140)
-    blue = RGBColor(24, 90, 180)
-    light = RGBColor(235, 240, 247)
-    mint = RGBColor(0, 170, 160)
-    black = RGBColor(30, 30, 30)
-    gray = RGBColor(90, 90, 90)
-    line_gray = RGBColor(190, 190, 190)
-    pale = RGBColor(238, 248, 252)
-    tag_mint = RGBColor(174, 220, 213)
-    tag_blue = RGBColor(77, 145, 200)
-
-    def set_font(run, size, color=black, bold=False):
-        run.font.name = "Malgun Gothic"
-        run.font.size = Pt(size)
-        run.font.bold = bold
-        run.font.color.rgb = color
-        try:
-            run._element.rPr.rFonts.set(qn("a:ea"), "Malgun Gothic")
-        except Exception:
-            pass
-
-    def textbox(px, py, pw, ph, text, size=12, color=black, bold=False, align=None, fill=None):
-        shape = slide.shapes.add_textbox(X(px), Y(py), CX(pw), CY(ph))
-        tf = shape.text_frame
-        tf.clear()
-        tf.word_wrap = True
-        tf.margin_left = Pt(0)
-        tf.margin_right = Pt(0)
-        tf.margin_top = Pt(0)
-        tf.margin_bottom = Pt(0)
-        p = tf.paragraphs[0]
-        if align is not None:
-            p.alignment = align
-        run = p.add_run()
-        run.text = str(text or "")
-        set_font(run, size, color, bold)
-        if fill:
-            shape.fill.solid()
-            shape.fill.fore_color.rgb = fill
-        return shape
-
-    def rect(px, py, pw, ph, fill=None, line=None, radius=False, width=1):
-        shp = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE if radius else MSO_SHAPE.RECTANGLE, X(px), Y(py), CX(pw), CY(ph))
-        if fill:
-            shp.fill.solid()
-            shp.fill.fore_color.rgb = fill
-        else:
-            shp.fill.background()
-        if line:
-            shp.line.color.rgb = line
-            shp.line.width = Pt(width)
-        else:
-            shp.line.fill.background()
-        return shp
-
-    def line(px1, py1, px2, py2, color=blue, width=2):
-        shp = slide.shapes.add_connector(1, X(px1), Y(py1), X(px2), Y(py2))
-        shp.line.color.rgb = color
-        shp.line.width = Pt(width)
-        return shp
-
-    def picture(img, px, py, pw, ph):
-        stream = pil_to_stream(fit_image(img, (max(1, pw), max(1, ph))))
-        slide.shapes.add_picture(stream, X(px), Y(py), width=CX(pw), height=CY(ph))
-
-    def section_label(text, py):
-        line(55, py - 30, 110, py - 30, blue, 3)
-        textbox(50, py, 90, 110, text, size=17, color=navy, bold=True)
-
-    # Header
-    rect(0, 0, W, 260, fill=light)
-    rect(0, 0, 150, 150, fill=navy)
-    textbox(30, 52, 90, 45, "PIUM", size=21, color=RGBColor(255, 255, 255), bold=True)
-    header_line = f"PIUM Tech Offer  x  {data.get('university', '')} {data.get('department', '')}, {data.get('professor', '')} 교수"
-    textbox(180, 42, 950, 35, header_line, size=14, color=navy)
-    textbox(180, 88, 950, 110, data.get("marketing_title", "기술명"), size=28, color=navy, bold=True)
-    textbox(180, 215, 950, 35, data.get("subtitle", ""), size=14, color=gray)
-
-    # Applications
-    y_app = 320
-    section_label("적용\n분야\n제품", y_app + 18)
-    xs = [270, 545, 820]
+    X=90; CW=1060; gap=28; card_w=(CW-gap*2)//3
+    add_textbox(slide, X, 320, 300, 40, "적용분야 / 제품", 16, True, navy)
     for i, app in enumerate(data.get("applications", [])[:3]):
-        x = xs[i]
-        rect(x, y_app, 210, 200, fill=None, line=blue, radius=True, width=2)
-        if i < len(app_imgs):
-            picture(app_imgs[i], x + 36, y_app + 18, 138, 112)
-        textbox(x + 22, y_app + 138, 166, 45, app.get("name", ""), size=9, color=black, align=PP_ALIGN.CENTER)
-        if i < 2:
-            line(x + 220, y_app + 100, x + 260, y_app + 100, RGBColor(150, 190, 230), 2)
+        x=X+i*(card_w+gap); y=372
+        add_rect(slide, x, y, card_w, 230, fill=(255,255,255), outline=(196,216,235), radius=True)
+        if i < len(app_imgs): slide.shapes.add_picture(img_bytes(fit_image(app_imgs[i], (150,118))), px(x+(card_w-150)//2), px(y+22), width=px(150), height=px(118))
+        add_textbox(slide, x+24, y+150, card_w-48, 60, app.get("name", ""), 12, True, black)
 
-    # Overview
-    y_overview = 590
-    section_label("기술\n개요", y_overview + 28)
-    picture(rep_img, 230, y_overview + 15, 260, 210)
-    y = y_overview + 35
-    for item in data.get("overview", [])[:3]:
-        textbox(550, y, 600, 52, "› " + item, size=12, color=black)
-        y += 62
+    left_x=X; right_x=X+CW//2+15; box_w=CW//2-15
+    y=625
+    for x,title,items in [(left_x,"기술개요",data.get("overview",[])[:3]),(right_x,"핵심 차별성",data.get("differentiation",[])[:3])]:
+        add_rect(slide, x, y, box_w, 325, fill=sky2, outline=line, radius=True)
+        add_textbox(slide, x+28, y+25, 250, 35, title, 16, True, navy)
+        add_textbox(slide, x+34, y+82, box_w-68, 220, "\n".join(["› "+str(v) for v in items]), 12, False, black)
 
-    # Competitiveness
-    y_comp = 900
-    section_label("기술\n경쟁력", y_comp + 40)
-    rect(190, y_comp, 930, 130, fill=pale, radius=True)
-    rect(230, y_comp + 30, 160, 60, fill=None, line=RGBColor(0, 170, 160), radius=True, width=2)
-    textbox(262, y_comp + 45, 100, 30, "기존기술", size=13, color=black, bold=True, align=PP_ALIGN.CENTER)
-    textbox(542, y_comp + 45, 210, 30, "▶  기술 차별성  ▶", size=13, color=blue, bold=True, align=PP_ALIGN.CENTER)
-    rect(940, y_comp + 30, 160, 60, fill=None, line=blue, radius=True, width=2)
-    textbox(972, y_comp + 45, 100, 30, "대상기술", size=13, color=black, bold=True, align=PP_ALIGN.CENTER)
-    line(620, y_comp + 155, 620, y_comp + 440, RGBColor(210, 210, 210), 1)
+    y=990
+    add_rect(slide, left_x, y, box_w, 365, fill=(255,255,255), outline=line, radius=True)
+    add_rect(slide, right_x, y, box_w, 365, fill=(255,255,255), outline=line, radius=True)
+    add_textbox(slide, left_x+28, y+25, 250, 35, "대표도면", 16, True, navy)
+    slide.shapes.add_picture(img_bytes(fit_image(rep_img, (box_w-90,255))), px(left_x+45), px(y+85), width=px(box_w-90), height=px(255))
+    add_textbox(slide, right_x+28, y+25, 250, 35, "기술 경쟁력", 16, True, navy)
+    add_rect(slide, right_x+32, y+80, box_w-64, 105, fill=(247,250,252), outline=(225,233,242), radius=True)
+    add_textbox(slide, right_x+52, y+96, 260, 28, "기존기술 한계", 13, True, cyan)
+    add_textbox(slide, right_x+52, y+130, box_w-105, 52, "\n".join(["• "+str(v) for v in data.get("limitations",[])[:2]]), 10, False, black)
+    add_rect(slide, right_x+32, y+210, box_w-64, 145, fill=(243,248,253), outline=(225,233,242), radius=True)
+    add_textbox(slide, right_x+52, y+226, 260, 28, "기술적 우위", 13, True, blue)
+    add_textbox(slide, right_x+52, y+260, box_w-105, 75, "\n".join(["▸ "+str(v) for v in data.get("technical_advantages",[])[:2]]), 10, False, navy)
 
-    y = y_comp + 165
-    for item in data.get("limitations", [])[:2]:
-        textbox(210, y, 380, 60, "● " + item, size=11, color=black)
-        y += 78
+    y=1395; ip=normalize_ip(data.get("ip",{}))
+    add_rect(slide, X, y, CW, 205, fill=sky2, outline=line, radius=True)
+    add_textbox(slide, X+28, y+22, 300, 35, "지식재산권 현황", 16, True, navy)
+    add_rect(slide, X+28, y+70, CW-56, 100, fill=(255,255,255), outline=(195,202,210))
+    add_textbox(slide, X+46, y+82, 380, 30, "발명의 명칭", 12, True, black)
+    add_textbox(slide, X+465, y+78, 250, 36, "출원번호\n(등록번호)", 10, True, black)
+    add_textbox(slide, X+760, y+78, 250, 36, "출원일자\n(등록일자)", 10, True, black)
+    add_textbox(slide, X+46, y+124, 390, 50, ip["title"] or data.get("original_title",""), 9, False, black)
+    add_textbox(slide, X+465, y+124, 250, 50, f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number'], 12, False, black)
+    add_textbox(slide, X+760, y+124, 250, 50, f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date'], 12, False, black)
 
-    y = y_comp + 165
-    for item in data.get("differentiation", [])[:2]:
-        textbox(660, y, 420, 60, "● " + item, size=11, color=black)
-        y += 78
+    y=1625
+    add_rect(slide, X, y, CW, 75, fill=(255,255,255), outline=line, radius=True)
+    add_textbox(slide, X+28, y+22, 120, 35, "문의처", 16, True, navy)
+    add_textbox(slide, X+150, y+25, CW-180, 32, contact, 12, False, black)
 
-    tag_y = y_comp + 330
-    rect(210, tag_y, 160, 40, fill=tag_mint)
-    textbox(225, tag_y + 8, 120, 24, "기술적 한계", size=10, color=RGBColor(255, 255, 255))
-    rect(660, tag_y, 160, 40, fill=tag_blue)
-    textbox(675, tag_y + 8, 120, 24, "기술적 우위", size=10, color=RGBColor(255, 255, 255))
+    bio=BytesIO(); prs.save(bio); return bio.getvalue()
 
-    y = tag_y + 55
-    tech_limits = data.get("technical_limitations") or data.get("limitations", [])
-    for item in tech_limits[:2]:
-        textbox(210, y, 380, 38, "▸ " + item, size=9, color=black)
-        y += 44
-
-    y = tag_y + 55
-    for item in data.get("technical_advantages", [])[:2]:
-        textbox(660, y, 430, 38, "▸ " + item, size=9, color=navy)
-        y += 44
-
-    # IP table
-    y_ip = 1425
-    section_label("지식\n재산권\n현황", y_ip + 25)
-    ip = data.get("ip", {})
-    cols = [190, 500, 780, 1120]
-    headers = ["발명의 명칭", "출원번호\n(등록번호)", "출원일자\n(등록일자)"]
-    for j in range(3):
-        rect(cols[j], y_ip, cols[j + 1] - cols[j], 70, fill=RGBColor(235, 235, 235), line=line_gray)
-        textbox(cols[j] + 28, y_ip + 14, cols[j + 1] - cols[j] - 56, 45, headers[j], size=12, color=black, bold=True, align=PP_ALIGN.CENTER)
-        rect(cols[j], y_ip + 70, cols[j + 1] - cols[j], 100, fill=None, line=line_gray)
-    textbox(205, y_ip + 86, 280, 78, ip.get("title", data.get("original_title", "")), size=9, color=black)
-    textbox(520, y_ip + 88, 240, 78, ip_number_text(ip), size=12, color=black)
-    textbox(800, y_ip + 88, 280, 78, ip_date_text(ip), size=12, color=black)
-
-    # Contact
-    y_contact = 1640
-    section_label("문의처", y_contact)
-    textbox(190, y_contact + 8, 930, 40, contact, size=12, color=black)
-
-    bio = BytesIO()
-    prs.save(bio)
-    return bio.getvalue()
-
-# =====================================================
-# 10. Streamlit UI
-# =====================================================
-
-st.title("PIUM Tech Offer SMK 생성기")
-st.caption("특허 명세서 PDF를 업로드하면 GPT가 SMK 내용을 생성하고, 최종 PDF와 수정 가능한 PPTX를 다운로드합니다.")
+# -----------------------------------------------------
+# Streamlit UI
+# -----------------------------------------------------
+st.title("PIUM Tech Brief 생성기")
+st.caption("특허 명세서 PDF를 업로드하면 카드형 1페이지 Tech Brief, PDF, PPTX를 생성합니다.")
 
 with st.sidebar:
     st.header("입력 정보")
     uploaded_pdf = st.file_uploader("특허 명세서 PDF 업로드", type=["pdf"])
-
-    university_choice = st.selectbox("대학교", UNIVERSITY_OPTIONS, index=0)
-    if university_choice == "수기입력":
-        university_name = st.text_input("대학교명 수기입력", placeholder="예: ○○대학교")
-    else:
-        university_name = university_choice
-
-    department = st.text_input("소속/학과", placeholder="예: 사회환경시스템공학과")
-    professor = st.text_input("교수명", placeholder="예: 김원국")
+    selected_univ = st.selectbox("대학교", UNIVERSITIES, index=0)
+    custom_univ = ""
+    if selected_univ == "수기입력":
+        custom_univ = st.text_input("대학교 수기입력", placeholder="예: ○○대학교")
+    university = custom_univ.strip() if selected_univ == "수기입력" else selected_univ
+    department = st.text_input("학과/소속", placeholder="예: 컴퓨터공학과")
+    professor = st.text_input("교수명", placeholder="예: 홍길동")
 
     st.divider()
     st.subheader("문의처")
@@ -774,27 +521,22 @@ with st.sidebar:
     phone = st.text_input("연락처", placeholder="예: 051.510.2741")
     email = st.text_input("이메일", placeholder="예: example@pusan.ac.kr")
 
-    generate_btn = st.button("SMK 생성", type="primary", use_container_width=True)
+    st.divider()
+    make_images = st.checkbox("적용분야 이미지 생성", value=True, help="끄면 이미지 생성 비용이 발생하지 않습니다.")
+    generate_btn = st.button("Tech Brief 생성", type="primary", use_container_width=True)
 
 for key, default in {
-    "smk_data": None,
-    "smk_image": None,
-    "pdf_bytes": None,
-    "pptx_bytes": None,
-    "pdf_path": None,
-    "rep_img": None,
-    "app_imgs": [],
+    "data": None, "brief_image": None, "pdf_bytes": None, "pptx_bytes": None,
+    "pdf_path": None, "app_imgs": [], "rep_img": None
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
 
 if generate_btn:
     if uploaded_pdf is None:
-        st.error("특허 명세서 PDF를 업로드하세요.")
-        st.stop()
-    if not university_name:
-        st.error("대학교명을 선택 또는 입력하세요.")
-        st.stop()
+        st.error("특허 명세서 PDF를 업로드하세요."); st.stop()
+    if not university:
+        st.error("대학교명을 입력 또는 선택하세요."); st.stop()
 
     with st.spinner("PDF 분석 중..."):
         pdf_path = save_uploaded_file(uploaded_pdf)
@@ -803,91 +545,59 @@ if generate_btn:
         st.session_state.pdf_path = pdf_path
         st.session_state.rep_img = rep_img
 
-    with st.spinner("GPT로 SMK 텍스트 생성 중..."):
-        data = analyze_patent_with_gpt(patent_text, university_name, department, professor)
-        st.session_state.smk_data = data
+    with st.spinner("GPT로 Tech Brief 텍스트 생성 중..."):
+        data = analyze_patent_with_gpt(patent_text, university, department, professor)
+        data["university"] = university; data["department"] = department; data["professor"] = professor
+        st.session_state.data = data
 
-    app_imgs = []
-    with st.spinner("적용분야 이미지 생성 중..."):
-        for app in data.get("applications", [])[:3]:
-            try:
-                app_imgs.append(generate_application_image(app.get("name", ""), app.get("description", "")))
-            except Exception as e:
-                st.warning(f"적용분야 이미지 생성 실패: {e}")
-                app_imgs.append(Image.new("RGB", (1024, 1024), "white"))
-        st.session_state.app_imgs = app_imgs
+    app_imgs=[]
+    if make_images:
+        with st.spinner("적용분야 이미지 생성 중..."):
+            for app in data.get("applications", [])[:3]:
+                try:
+                    app_imgs.append(generate_application_image(app.get("name",""), app.get("description","")))
+                except Exception as e:
+                    st.warning(f"적용분야 이미지 생성 실패: {e}")
+                    app_imgs.append(Image.new("RGB", (1024,1024), "white"))
+    else:
+        app_imgs=[Image.new("RGB", (1024,1024), "white") for _ in data.get("applications", [])[:3]]
+    st.session_state.app_imgs = app_imgs
 
-    with st.spinner("SMK 페이지 구성 중..."):
-        contact = f"{org} {name} {position}   |   {phone}   |   {email}"
-        smk_img = compose_smk(data, rep_img, app_imgs, contact)
-        pdf_bytes = make_pdf_bytes_from_image(smk_img)
-        pptx_bytes = make_pptx_bytes(data, rep_img, app_imgs, contact)
-        st.session_state.smk_image = smk_img
-        st.session_state.pdf_bytes = pdf_bytes
-        st.session_state.pptx_bytes = pptx_bytes
+    with st.spinner("PDF/PPTX 구성 중..."):
+        contact = f"{org} {name} {position}  |  {phone}  |  {email}"
+        brief = compose_tech_brief(data, rep_img, app_imgs, contact)
+        st.session_state.brief_image = brief
+        st.session_state.pdf_bytes = make_pdf_bytes_from_image(brief)
+        st.session_state.pptx_bytes = make_pptx_bytes(data, rep_img, app_imgs, contact)
 
-if st.session_state.smk_data is None:
-    st.info("왼쪽 사이드바에서 정보를 입력하고 특허 PDF를 업로드한 뒤 'SMK 생성'을 누르세요.")
+if st.session_state.data is None:
+    st.info("왼쪽에서 정보를 입력하고 특허 PDF를 업로드한 뒤 'Tech Brief 생성'을 누르세요.")
 else:
-    col1, col2 = st.columns([1.1, 0.9], gap="large")
-
+    col1, col2 = st.columns([1.15, 0.85], gap="large")
     with col1:
-        st.subheader("SMK 미리보기")
-        st.image(st.session_state.smk_image, use_container_width=True)
-
+        st.subheader("Tech Brief 미리보기")
+        st.image(st.session_state.brief_image, use_container_width=True)
         c1, c2 = st.columns(2)
         with c1:
-            st.download_button(
-                label="PDF 다운로드",
-                data=st.session_state.pdf_bytes,
-                file_name="PIUM_Tech_Offer_SMK.pdf",
-                mime="application/pdf",
-                type="primary",
-                use_container_width=True,
-            )
+            st.download_button("PDF 다운로드", st.session_state.pdf_bytes, "PIUM_Tech_Brief.pdf", "application/pdf", type="primary", use_container_width=True)
         with c2:
-            st.download_button(
-                label="PPTX 다운로드(수정용)",
-                data=st.session_state.pptx_bytes,
-                file_name="PIUM_Tech_Offer_SMK_editable.pptx",
-                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                use_container_width=True,
-            )
+            st.download_button("PPTX 다운로드(수정용)", st.session_state.pptx_bytes, "PIUM_Tech_Brief.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", use_container_width=True)
 
     with col2:
         st.subheader("생성 텍스트 직접 수정")
-        edited_json = st.text_area(
-            "JSON 수정 후 아래 버튼을 누르면 수정 내용으로 PDF/PPTX가 다시 렌더링됩니다.",
-            value=json.dumps(st.session_state.smk_data, ensure_ascii=False, indent=2),
-            height=680,
-        )
-
+        edited_json = st.text_area("JSON 수정 후 다시 렌더링할 수 있습니다.", value=json.dumps(st.session_state.data, ensure_ascii=False, indent=2), height=720)
         if st.button("수정 내용으로 다시 생성", use_container_width=True):
-            if not st.session_state.pdf_path:
-                st.error("원본 PDF 경로가 없습니다. 다시 업로드 후 생성하세요.")
-                st.stop()
-
             try:
-                edited_data = normalize_data(json.loads(edited_json))
+                edited = json.loads(edited_json)
             except Exception as e:
-                st.error(f"JSON 형식 오류: {e}")
-                st.stop()
-
-            edited_data["university"] = university_name
-            edited_data["department"] = department
-            edited_data["professor"] = professor
-
+                st.error(f"JSON 형식 오류: {e}"); st.stop()
+            edited["university"] = university; edited["department"] = department; edited["professor"] = professor
+            contact = f"{org} {name} {position}  |  {phone}  |  {email}"
             rep_img = st.session_state.rep_img or extract_representative_drawing(st.session_state.pdf_path)
-            contact = f"{org} {name} {position}   |   {phone}   |   {email}"
-
-            smk_img = compose_smk(edited_data, rep_img, st.session_state.app_imgs, contact)
-            pdf_bytes = make_pdf_bytes_from_image(smk_img)
-            pptx_bytes = make_pptx_bytes(edited_data, rep_img, st.session_state.app_imgs, contact)
-
-            st.session_state.smk_data = edited_data
-            st.session_state.smk_image = smk_img
-            st.session_state.pdf_bytes = pdf_bytes
-            st.session_state.pptx_bytes = pptx_bytes
-
-            st.success("수정 내용이 반영되었습니다. PDF/PPTX를 다운로드하세요.")
+            brief = compose_tech_brief(edited, rep_img, st.session_state.app_imgs, contact)
+            st.session_state.data = edited
+            st.session_state.brief_image = brief
+            st.session_state.pdf_bytes = make_pdf_bytes_from_image(brief)
+            st.session_state.pptx_bytes = make_pptx_bytes(edited, rep_img, st.session_state.app_imgs, contact)
+            st.success("수정 내용이 반영되었습니다.")
             st.rerun()
