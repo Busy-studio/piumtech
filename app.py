@@ -270,6 +270,36 @@ def extract_representative_drawing(pdf_path: str) -> Image.Image:
     doc.close()
     return img
 
+
+def extract_qr_code_from_first_page(pdf_path: str) -> Image.Image | None:
+    """등록공보 1페이지 우측 상단 QR 영역을 추출한다.
+    QR이 없는 공보도 있으므로, 결과가 너무 작거나 비어 있으면 None을 반환한다.
+    """
+    try:
+        doc = fitz.open(pdf_path)
+        if len(doc) == 0:
+            return None
+        page = doc[0]
+        pix = page.get_pixmap(matrix=fitz.Matrix(3.2, 3.2), alpha=False)
+        img = Image.open(BytesIO(pix.tobytes("png"))).convert("RGB")
+        doc.close()
+
+        w, h = img.size
+        # 공보 첫 페이지의 QR은 일반적으로 우측 상단 영역에 위치하므로 해당 영역을 우선 탐색
+        crop = img.crop((int(w * 0.70), 0, w, int(h * 0.25)))
+        crop = trim_light_margins(crop, threshold=248, padding=10)
+
+        if crop.width < 45 or crop.height < 45:
+            return None
+
+        # QR은 정사각형에 가까우므로 정사각형 캔버스에 맞춰 안정적으로 배치
+        side = max(crop.width, crop.height)
+        canvas = Image.new("RGB", (side, side), "white")
+        canvas.paste(crop, ((side - crop.width)//2, (side - crop.height)//2))
+        return canvas
+    except Exception:
+        return None
+
 # -----------------------------------------------------
 # GPT
 # -----------------------------------------------------
@@ -427,9 +457,33 @@ def clean_dark_background(img: Image.Image) -> Image.Image:
     img.putdata(data)
     return img
 
-def fit_image(src: Image.Image, size: Tuple[int, int], bg=(255,255,255)) -> Image.Image:
+def trim_light_margins(src: Image.Image, threshold: int = 248, padding: int = 8) -> Image.Image:
+    """흰색 여백을 자동 제거해 아이콘/대표도면이 박스 안에서 작아 보이지 않도록 보정."""
     im = src.copy().convert("RGB")
-    im.thumbnail(size)
+    w, h = im.size
+    pix = im.load()
+    xs, ys = [], []
+    for y in range(h):
+        for x in range(w):
+            r, g, b = pix[x, y]
+            # 거의 흰 배경과 아주 연한 회색은 여백으로 간주
+            if not (r >= threshold and g >= threshold and b >= threshold):
+                # 너무 연한 그림자도 일부 포함되도록 보수적으로 판단
+                if max(r, g, b) - min(r, g, b) > 8 or (r + g + b) / 3 < threshold - 6:
+                    xs.append(x); ys.append(y)
+    if not xs or not ys:
+        return im
+    x1, x2 = max(0, min(xs)-padding), min(w, max(xs)+padding)
+    y1, y2 = max(0, min(ys)-padding), min(h, max(ys)+padding)
+    if x2 <= x1 or y2 <= y1:
+        return im
+    return im.crop((x1, y1, x2, y2))
+
+def fit_image(src: Image.Image, size: Tuple[int, int], bg=(255,255,255), trim: bool = True) -> Image.Image:
+    im = src.copy().convert("RGB")
+    if trim:
+        im = trim_light_margins(im)
+    im.thumbnail(size, Image.LANCZOS)
     canvas = Image.new("RGB", size, bg)
     x = (size[0] - im.width)//2
     y = (size[1] - im.height)//2
@@ -629,7 +683,7 @@ def get_visual_palette(university_logo: Image.Image | None) -> Dict[str, Tuple[i
     }
 
 
-def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str, university_logo: Image.Image | None = None, pium_logo: Image.Image | None = None) -> Image.Image:
+def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str, university_logo: Image.Image | None = None, pium_logo: Image.Image | None = None, qr_img: Image.Image | None = None) -> Image.Image:
     W, H = 1240, 1754
     im = Image.new("RGB", (W, H), "white")
     d = ImageDraw.Draw(im)
@@ -671,6 +725,15 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     pium_canvas = make_transparent_logo_canvas(pium_logo, size=(150, 86), padding=4)
     im.paste(pium_canvas, (W-178, 34), pium_canvas)
 
+    # 등록공보 첫 페이지 QR: PIUM 로고 아래 우측 상단에 선택적으로 배치
+    if qr_img is not None:
+        qr_size = 74
+        qr_x = W - 140
+        qr_y = 124
+        d.rounded_rectangle((qr_x-6, qr_y-6, qr_x+qr_size+6, qr_y+qr_size+6), radius=8, fill=(255,255,255), outline=uni_line, width=1)
+        qr = fit_image(qr_img, (qr_size, qr_size), bg=(255,255,255), trim=True)
+        im.paste(qr, (qr_x, qr_y))
+
     header_x = 190
     header_w = W - header_x - 225
     kicker = f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} 교수"
@@ -700,10 +763,11 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
             sep_x = x - col_gap//2
             d.line((sep_x, inner_y+6, sep_x, app_y+app_h-28), fill=mix(line, (255,255,255), 0.20), width=1)
         if i < len(app_imgs):
-            icon = fit_image(app_imgs[i], (128, 96), bg=(255,255,255))
-            im.paste(icon, (x + (col_w-128)//2, inner_y))
+            icon_w, icon_h = 190, 118
+            icon = fit_image(app_imgs[i], (icon_w, icon_h), bg=(255,255,255), trim=True)
+            im.paste(icon, (x + (col_w-icon_w)//2, inner_y-6))
         app = apps[i] if i < len(apps) else {"name":"", "description":""}
-        draw_centered_wrapped(d, (x+10, inner_y+112, x+col_w-10, inner_y+160), app.get("name", ""), load_font(20, True), black, max_lines=2, line_gap=4)
+        draw_centered_wrapped(d, (x+10, inner_y+128, x+col_w-10, inner_y+174), app.get("name", ""), load_font(20, True), black, max_lines=2, line_gap=4)
 
     # Overview / Differentiation
     y = 552
@@ -725,8 +789,9 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     draw_card(d, (right_x, y, right_x+box_w, y+comp_h), radius=24, fill=(255,255,255), outline=line, width=2)
     draw_section_title(d, left_x+28, y+24, "대표도면", f_sec, primary)
     draw_section_title(d, right_x+28, y+24, "기술 경쟁력", f_sec, primary)
-    rep = fit_image(rep_img, (box_w-90, 230), bg=(255,255,255))
-    im.paste(rep, (left_x+45, y+84))
+    rep_w, rep_h = box_w - 60, 246
+    rep = fit_image(rep_img, (rep_w, rep_h), bg=(255,255,255), trim=True)
+    im.paste(rep, (left_x+30, y+78))
 
     sub_y1 = y + 76
     sub_h1 = 112
@@ -817,7 +882,7 @@ def add_rect(slide, x, y, w, h, fill=(255,255,255), outline=(220,230,242), radiu
     shp.line.width = Pt(1)
     return shp
 
-def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str, university_logo: Image.Image | None = None, pium_logo: Image.Image | None = None) -> bytes:
+def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str, university_logo: Image.Image | None = None, pium_logo: Image.Image | None = None, qr_img: Image.Image | None = None) -> bytes:
     """PPTX 수정용: PDF 이미지와 동일한 박스형 레이아웃을 편집 가능한 텍스트/이미지 객체로 구성."""
     pal = get_visual_palette(university_logo)
     uni_primary = pal["uni_primary"]
@@ -843,6 +908,9 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     slide.shapes.add_picture(img_bytes(left_logo_box), px(0), px(0), width=px(145), height=px(145))
     pium_canvas = make_transparent_logo_canvas(pium_logo, size=(150,86), padding=4)
     slide.shapes.add_picture(img_bytes(pium_canvas), px(1062), px(34), width=px(150), height=px(86))
+    if qr_img is not None:
+        qr_box = fit_image(qr_img, (74,74), bg=(255,255,255), trim=True)
+        slide.shapes.add_picture(img_bytes(qr_box), px(1100), px(124), width=px(74), height=px(74))
     add_textbox(slide, 190, 45, 825, 32, f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} 교수", 13, False, uni_primary)
     add_textbox(slide, 190, 82, 825, 82, data.get("marketing_title", ""), 24, True, uni_primary)
     add_rect(slide, 190, 176, 825, 46, fill=(255,255,255), outline=uni_line, radius=True)
@@ -858,8 +926,9 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
         app = apps[i] if i < len(apps) else {"name":""}
         x=X+28+i*(col_w+col_gap)
         if i < len(app_imgs):
-            slide.shapes.add_picture(img_bytes(fit_image(app_imgs[i], (128,96))), px(x+(col_w-128)//2), px(inner_y), width=px(128), height=px(96))
-        add_textbox(slide, x+10, inner_y+112, col_w-20, 48, app.get("name", ""), 11, True, black, align=PP_ALIGN.CENTER)
+            icon_w, icon_h = 190, 118
+            slide.shapes.add_picture(img_bytes(fit_image(app_imgs[i], (icon_w, icon_h), trim=True)), px(x+(col_w-icon_w)//2), px(inner_y-6), width=px(icon_w), height=px(icon_h))
+        add_textbox(slide, x+10, inner_y+128, col_w-20, 48, app.get("name", ""), 11, True, black, align=PP_ALIGN.CENTER)
 
     left_x=X; right_x=X+CW//2+15; box_w=CW//2-15
     y=552; box_h=292
@@ -872,7 +941,8 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     add_rect(slide, left_x, y, box_w, comp_h, fill=(255,255,255), outline=line, radius=True)
     add_rect(slide, right_x, y, box_w, comp_h, fill=(255,255,255), outline=line, radius=True)
     add_textbox(slide, left_x+28, y+24, 250, 35, "대표도면", 15, True, primary)
-    slide.shapes.add_picture(img_bytes(fit_image(rep_img, (box_w-90,230))), px(left_x+45), px(y+84), width=px(box_w-90), height=px(230))
+    rep_w, rep_h = box_w-60, 246
+    slide.shapes.add_picture(img_bytes(fit_image(rep_img, (rep_w, rep_h), trim=True)), px(left_x+30), px(y+78), width=px(rep_w), height=px(rep_h))
     add_textbox(slide, right_x+28, y+24, 250, 35, "기술 경쟁력", 15, True, primary)
     add_rect(slide, right_x+32, y+76, box_w-64, 112, fill=(255,255,255), outline=line, radius=True)
     add_textbox(slide, right_x+52, y+90, 260, 28, "기존기술 한계", 11, True, gray)
@@ -932,7 +1002,7 @@ with st.sidebar:
 
 for key, default in {
     "data": None, "brief_image": None, "pdf_bytes": None, "pptx_bytes": None,
-    "pdf_path": None, "app_imgs": [], "rep_img": None
+    "pdf_path": None, "app_imgs": [], "rep_img": None, "qr_img": None
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -947,8 +1017,10 @@ if generate_btn:
         pdf_path = save_uploaded_file(uploaded_pdf)
         patent_text = extract_patent_text(pdf_path)
         rep_img = extract_representative_drawing(pdf_path)
+        qr_img = extract_qr_code_from_first_page(pdf_path)
         st.session_state.pdf_path = pdf_path
         st.session_state.rep_img = rep_img
+        st.session_state.qr_img = qr_img
 
     with st.spinner("GPT로 Tech Brief 텍스트 생성 중..."):
         data = analyze_patent_with_gpt(patent_text, university, department, professor)
@@ -977,10 +1049,10 @@ if generate_btn:
         contact = f"{org} {name} {position}  |  {phone}  |  {email}"
         university_logo = get_logo_image(university) if use_logos else None
         pium_logo = get_pium_logo_image() if use_logos else None
-        brief = compose_tech_brief(data, rep_img, app_imgs, contact, university_logo, pium_logo)
+        brief = compose_tech_brief(data, rep_img, app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img)
         st.session_state.brief_image = brief
         st.session_state.pdf_bytes = make_pdf_bytes_from_image(brief)
-        st.session_state.pptx_bytes = make_pptx_bytes(data, rep_img, app_imgs, contact, university_logo, pium_logo)
+        st.session_state.pptx_bytes = make_pptx_bytes(data, rep_img, app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img)
 
 if st.session_state.data is None:
     st.info("왼쪽에서 정보를 입력하고 특허 PDF를 업로드한 뒤 'Tech Brief 생성'을 누르세요.")
@@ -1008,10 +1080,10 @@ else:
             rep_img = st.session_state.rep_img or extract_representative_drawing(st.session_state.pdf_path)
             university_logo = get_logo_image(university) if use_logos else None
             pium_logo = get_pium_logo_image() if use_logos else None
-            brief = compose_tech_brief(edited, rep_img, st.session_state.app_imgs, contact, university_logo, pium_logo)
+            brief = compose_tech_brief(edited, rep_img, st.session_state.app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img)
             st.session_state.data = edited
             st.session_state.brief_image = brief
             st.session_state.pdf_bytes = make_pdf_bytes_from_image(brief)
-            st.session_state.pptx_bytes = make_pptx_bytes(edited, rep_img, st.session_state.app_imgs, contact, university_logo, pium_logo)
+            st.session_state.pptx_bytes = make_pptx_bytes(edited, rep_img, st.session_state.app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img)
             st.success("수정 내용이 반영되었습니다.")
             st.rerun()
