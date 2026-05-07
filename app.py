@@ -256,47 +256,221 @@ def extract_patent_text(pdf_path: str) -> str:
     doc.close()
     return text[:60000]
 
+
+def _render_page_image(doc: fitz.Document, page_index: int, zoom: float = 3.2) -> Image.Image:
+    page = doc[page_index]
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+    return Image.open(BytesIO(pix.tobytes("png"))).convert("RGB")
+
+
+def _smart_trim_visual(img: Image.Image, threshold: int = 246, padding: int = 12) -> Image.Image:
+    """흰 여백을 제거하되, 너무 공격적으로 자르지 않도록 패딩을 남긴다."""
+    import numpy as np
+    im = img.convert("RGB")
+    arr = np.asarray(im)
+    # 흰 배경이 아닌 픽셀. 특허 도면의 옅은 회색선도 살리기 위해 threshold를 약간 높게 둠.
+    mask = np.any(arr < threshold, axis=2)
+    ys, xs = np.where(mask)
+    if len(xs) == 0 or len(ys) == 0:
+        return im
+    x1, x2 = max(xs.min() - padding, 0), min(xs.max() + padding + 1, im.width)
+    y1, y2 = max(ys.min() - padding, 0), min(ys.max() + padding + 1, im.height)
+    return im.crop((x1, y1, x2, y2))
+
+
+def _binary_connected_bboxes(mask):
+    """작은 ROI용 연결요소 bbox 추출. mask는 bool 2D."""
+    import numpy as np
+    h, w = mask.shape
+    visited = np.zeros_like(mask, dtype=bool)
+    bboxes = []
+    for yy in range(h):
+        xs = np.where(mask[yy] & (~visited[yy]))[0]
+        for sx in xs:
+            if visited[yy, sx] or not mask[yy, sx]:
+                continue
+            stack = [(sx, yy)]
+            visited[yy, sx] = True
+            minx = maxx = sx
+            miny = maxy = yy
+            count = 0
+            while stack:
+                x, y = stack.pop()
+                count += 1
+                if x < minx: minx = x
+                if x > maxx: maxx = x
+                if y < miny: miny = y
+                if y > maxy: maxy = y
+                for nx in (x-1, x, x+1):
+                    for ny in (y-1, y, y+1):
+                        if nx == x and ny == y:
+                            continue
+                        if 0 <= nx < w and 0 <= ny < h and (not visited[ny, nx]) and mask[ny, nx]:
+                            visited[ny, nx] = True
+                            stack.append((nx, ny))
+            bboxes.append((minx, miny, maxx+1, maxy+1, count))
+    return bboxes
+
+
+def _crop_qr_by_fixed_area(page_img: Image.Image) -> Image.Image | None:
+    """등록공보 1페이지 우측 상단의 QR만 안정적으로 크롭한다.
+    QR 주변의 공보 구분선/본문 일부가 같이 들어가지 않도록, 우측 상단 ROI에서
+    팽창(dilation)된 QR 클러스터만 찾아 다시 크롭한다.
+    """
+    import numpy as np
+    from PIL import ImageFilter
+
+    w, h = page_img.size
+    # QR이 위치하는 우측 상단 영역만 넉넉히 가져옴. 이후 클러스터 분석으로 QR만 분리.
+    roi = page_img.crop((int(w * 0.78), int(h * 0.010), int(w * 0.992), int(h * 0.125))).convert("RGB")
+    arr = np.asarray(roi)
+    raw_mask = np.any(arr < 245, axis=2).astype("uint8") * 255
+
+    # QR의 작은 모듈들을 하나의 덩어리로 연결. 긴 수평선은 ratio 조건에서 제외됨.
+    mask_img = Image.fromarray(raw_mask, mode="L").filter(ImageFilter.MaxFilter(13))
+    mask = np.asarray(mask_img) > 0
+    bboxes = _binary_connected_bboxes(mask)
+
+    candidates = []
+    for x1, y1, x2, y2, area in bboxes:
+        bw, bh = x2 - x1, y2 - y1
+        if bw < 45 or bh < 45:
+            continue
+        ratio = bw / max(1, bh)
+        # QR은 정사각형에 가까움. 공보 가로선처럼 긴 요소는 제외.
+        if 0.55 <= ratio <= 1.65:
+            # 우측 상단에 가까운 큰 정사각형 덩어리를 우선
+            score = area + bw * bh * 0.25 + x1 * 0.4 - y1 * 0.15
+            candidates.append((score, x1, y1, x2, y2))
+
+    if not candidates:
+        # fallback: 기존보다 좁은 좌표. 그래도 실패하면 None.
+        fallback = page_img.crop((int(w * 0.84), int(h * 0.018), int(w * 0.975), int(h * 0.105)))
+        qr = _smart_trim_visual(fallback, threshold=245, padding=8)
+        if qr.width < 35 or qr.height < 35:
+            return None
+    else:
+        _, x1, y1, x2, y2 = max(candidates, key=lambda t: t[0])
+        pad = 6
+        x1, y1 = max(0, x1 - pad), max(0, y1 - pad)
+        x2, y2 = min(roi.width, x2 + pad), min(roi.height, y2 + pad)
+        qr = roi.crop((x1, y1, x2, y2))
+        qr = _smart_trim_visual(qr, threshold=245, padding=8)
+
+    # QR 표시용 정사각 캔버스
+    if qr.width < 35 or qr.height < 35:
+        return None
+    side = max(qr.width, qr.height)
+    canvas = Image.new("RGB", (side, side), "white")
+    canvas.paste(qr, ((side - qr.width)//2, (side - qr.height)//2))
+    return canvas
+
+
+def _crop_representative_from_first_page(page_img: Image.Image) -> Image.Image:
+    """1페이지 하단의 '대표도' 실제 도면만 크롭한다.
+    전체 페이지가 대표도면 박스에 들어가는 문제를 막기 위해, 페이지 하단 영역에서
+    픽셀 밀도가 높은 시각 요소 클러스터를 찾아 대표도면으로 사용한다.
+    """
+    import numpy as np
+    w, h = page_img.size
+
+    # 대표도는 국내 공보 1페이지의 요약 아래, 대체로 하단 45% 영역에 위치
+    # 페이지 번호/footer는 제외하기 위해 92%까지만 사용
+    y0, y1 = int(h * 0.52), int(h * 0.925)
+    x0, x1 = int(w * 0.04), int(w * 0.96)
+    roi = page_img.crop((x0, y0, x1, y1)).convert("RGB")
+    arr = np.asarray(roi)
+
+    # 흰색이 아닌 픽셀 카운트. 텍스트보다 도면 영역이 행/열 방향 밀도가 높음.
+    mask = np.any(arr < 245, axis=2)
+    row_counts = mask.sum(axis=1)
+    col_counts = mask.sum(axis=0)
+
+    # 도면 행 클러스터 탐색: 너무 낮은 텍스트/잡음은 제외
+    row_thr = max(6, int(roi.width * 0.018))
+    active_rows = row_counts > row_thr
+
+    clusters = []
+    start = None
+    for i, active in enumerate(active_rows):
+        if active and start is None:
+            start = i
+        elif not active and start is not None:
+            if i - start > 12:
+                clusters.append((start, i, int(row_counts[start:i].sum())))
+            start = None
+    if start is not None and len(active_rows) - start > 12:
+        clusters.append((start, len(active_rows), int(row_counts[start:].sum())))
+
+    if clusters:
+        # 픽셀량이 가장 큰 클러스터를 대표도면으로 판단
+        cy1, cy2, _ = max(clusters, key=lambda t: t[2])
+        # 위아래 여유 추가
+        cy1 = max(0, cy1 - 25)
+        cy2 = min(roi.height, cy2 + 25)
+        sub = roi.crop((0, cy1, roi.width, cy2))
+    else:
+        sub = roi
+
+    # 선택된 행 영역 내에서 실제 도면의 좌우 범위 산정
+    arr2 = np.asarray(sub)
+    mask2 = np.any(arr2 < 245, axis=2)
+    col_counts2 = mask2.sum(axis=0)
+    col_thr = max(4, int(sub.height * 0.018))
+    xs = np.where(col_counts2 > col_thr)[0]
+    ys = np.where(mask2.sum(axis=1) > max(4, int(sub.width * 0.01)))[0]
+
+    if len(xs) and len(ys):
+        pad = 28
+        cx1, cx2 = max(0, xs.min() - pad), min(sub.width, xs.max() + pad + 1)
+        cy1b, cy2b = max(0, ys.min() - pad), min(sub.height, ys.max() + pad + 1)
+        sub = sub.crop((cx1, cy1b, cx2, cy2b))
+
+    return _smart_trim_visual(sub, threshold=248, padding=16)
+
+
 def extract_representative_drawing(pdf_path: str) -> Image.Image:
+    """대표도면 추출.
+    1순위: 등록공보 1페이지에 표시된 '대표도' 실제 도면 영역
+    2순위: 대표도 번호가 별도 도면 페이지에만 있는 경우, 기존 방식으로 해당 페이지 렌더링 후 여백 제거
+    """
     doc = fitz.open(pdf_path)
+    if len(doc) == 0:
+        doc.close()
+        return Image.new("RGB", (800, 600), "white")
+
+    # 대부분의 등록공보는 1페이지에 대표도 이미지가 이미 들어 있으므로 우선 처리
+    first_img = _render_page_image(doc, 0, zoom=3.2)
+    first_text = doc[0].get_text("text")
+    if "대표도" in first_text or "대 표 도" in first_text or "대표 도" in first_text:
+        try:
+            cropped = _crop_representative_from_first_page(first_img)
+            doc.close()
+            return cropped
+        except Exception:
+            pass
+
+    # fallback: 도면 페이지 중 대표도/도면 관련 페이지를 찾되 전체 페이지가 들어가지 않도록 여백 제거
     candidate = []
     for i, page in enumerate(doc):
         t = page.get_text("text")
         if any(k in t for k in ["대표도", "대표 도", "도면1", "도 1", "도면 1"]):
             candidate.append(i)
     page_idx = candidate[-1] if candidate else max(len(doc)-1, 0)
-    page = doc[page_idx]
-    pix = page.get_pixmap(matrix=fitz.Matrix(2.8, 2.8), alpha=False)
-    img = Image.open(BytesIO(pix.tobytes("png"))).convert("RGB")
+    img = _render_page_image(doc, page_idx, zoom=3.0)
     doc.close()
-    return img
+    return _smart_trim_visual(img, threshold=248, padding=20)
 
 
 def extract_qr_code_from_first_page(pdf_path: str) -> Image.Image | None:
-    """등록공보 1페이지 우측 상단 QR 영역을 추출한다.
-    QR이 없는 공보도 있으므로, 결과가 너무 작거나 비어 있으면 None을 반환한다.
-    """
+    """등록공보 1페이지 우측 상단 QR 코드만 추출한다."""
     try:
         doc = fitz.open(pdf_path)
         if len(doc) == 0:
             return None
-        page = doc[0]
-        pix = page.get_pixmap(matrix=fitz.Matrix(3.2, 3.2), alpha=False)
-        img = Image.open(BytesIO(pix.tobytes("png"))).convert("RGB")
+        img = _render_page_image(doc, 0, zoom=4.0)
         doc.close()
-
-        w, h = img.size
-        # 공보 첫 페이지의 QR은 일반적으로 우측 상단 영역에 위치하므로 해당 영역을 우선 탐색
-        crop = img.crop((int(w * 0.70), 0, w, int(h * 0.25)))
-        crop = trim_light_margins(crop, threshold=248, padding=10)
-
-        if crop.width < 45 or crop.height < 45:
-            return None
-
-        # QR은 정사각형에 가까우므로 정사각형 캔버스에 맞춰 안정적으로 배치
-        side = max(crop.width, crop.height)
-        canvas = Image.new("RGB", (side, side), "white")
-        canvas.paste(crop, ((side - crop.width)//2, (side - crop.height)//2))
-        return canvas
+        return _crop_qr_by_fixed_area(img)
     except Exception:
         return None
 
