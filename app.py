@@ -23,10 +23,10 @@ IMAGE_MODEL_FIXED = "gpt-image-1"
 
 UNIVERSITIES = [
     "부산대학교", "국립부경대학교", "국립한국해양대학교", "동아대학교", "동의대학교", "동서대학교",
-    "동명대학교", "신라대학교", "울산대학교", "경남대학교", "경상대학교", "창원대학교", "인제대학교", "수기입력"
+    "동명대학교", "신라대학교", "울산대학교", "경남대학교", "경상대학교", "국립창원대학교", "인제대학교", "수기입력"
 ]
 
-st.set_page_config(page_title="PIUM Tech Brief 생성기", page_icon="📄", layout="wide")
+st.set_page_config(page_title="PIUM Tech × 지역대학 SMK 생성기", page_icon="📄", layout="wide")
 
 # -----------------------------------------------------
 # Client / Font
