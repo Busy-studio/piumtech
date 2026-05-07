@@ -539,112 +539,132 @@ def draw_bullets_fit(draw, x, y, items, size, bold, color, max_width, max_height
         yy += item_gap
     return yy
 
+def get_visual_palette(university_logo: Image.Image | None) -> Dict[str, Tuple[int, int, int]]:
+    """대학 로고색은 헤더/보조 accent에만 사용하고, 본문 기술영역은 PIUM/Tech Blue 계열로 고정."""
+    uni_theme = extract_logo_theme(university_logo)
+    uni_primary = uni_theme["primary"]
+    pium_blue = (0, 86, 150)
+    tech_blue = (0, 112, 185)
+    tech_cyan = (0, 162, 190)
+    return {
+        "uni_primary": uni_primary,
+        "uni_pale": mix(uni_primary, (255, 255, 255), 0.90),
+        "uni_line": mix(uni_primary, (255, 255, 255), 0.72),
+        "pium_blue": pium_blue,
+        "tech_blue": tech_blue,
+        "tech_cyan": tech_cyan,
+        "tech_pale": (241, 248, 253),
+        "tech_pale2": (247, 251, 254),
+        "tech_line": (185, 213, 235),
+        "table_header": (232, 241, 248),
+        "black": (28, 34, 43),
+        "gray": (92, 99, 110),
+    }
+
+
 def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str, university_logo: Image.Image | None = None, pium_logo: Image.Image | None = None) -> Image.Image:
     W, H = 1240, 1754
     im = Image.new("RGB", (W, H), "white")
     d = ImageDraw.Draw(im)
 
-    theme = extract_logo_theme(university_logo)
-    primary = theme["primary"]
-    secondary = theme["secondary"]
-    accent = theme["accent"]
-    sky = theme["pale"]
-    sky2 = theme["pale2"]
-    line = theme["line"]
-    black = theme["black"]
-    gray = theme["gray"]
-    table_header = mix(primary, (255,255,255), 0.88)
+    pal = get_visual_palette(university_logo)
+    uni_primary = pal["uni_primary"]
+    uni_pale = pal["uni_pale"]
+    uni_line = pal["uni_line"]
+    primary = pal["pium_blue"]
+    secondary = pal["tech_blue"]
+    accent = pal["tech_cyan"]
+    sky = pal["tech_pale"]
+    sky2 = pal["tech_pale2"]
+    line = pal["tech_line"]
+    table_header = pal["table_header"]
+    black = pal["black"]
+    gray = pal["gray"]
 
-    f_kicker = load_font(24, False)
-    f_title = load_font(42, True)
-    f_sub = load_font(22, False)
     f_sec = load_font(25, True)
     f_card = load_font(20, True)
-    f_body = load_font(18, False)
-    f_small = load_font(15, False)
-    f_tiny = load_font(14, False)
 
     d.rectangle((0, 0, W, H), fill=(255,255,255))
 
-    # Header: 제목 영역은 낮게, subtitle은 별도 white pill로 분리
-    header_h = 252
-    d.rectangle((0, 0, W, header_h), fill=sky)
+    # Header: 대학색은 헤더 배경과 타이틀에만 강하게 반영, PIUM 브랜드와 본문 기술영역은 블루 계열 고정
+    header_h = 246
+    d.rectangle((0, 0, W, header_h), fill=uni_pale)
 
-    LOGO_BOX = 150
+    LOGO_BOX = 145
     left_logo_box = make_university_logo_box(
         university_logo,
         data.get('university',''),
         size=(LOGO_BOX, LOGO_BOX),
-        bg=sky,
-        primary=primary,
+        bg=uni_pale,
+        primary=uni_primary,
     )
     im.paste(left_logo_box, (0, 0))
 
-    # PIUM 로고는 박스 없이 우측 상단 배치
+    # PIUM 로고는 박스 없이 우측 상단 고정 배치
     pium_canvas = make_transparent_logo_canvas(pium_logo, size=(150, 86), padding=4)
     im.paste(pium_canvas, (W-178, 34), pium_canvas)
 
     header_x = 190
-    header_w = W - header_x - 230
+    header_w = W - header_x - 225
     kicker = f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} 교수"
-    draw_fitted_wrapped(d, (header_x, 48), kicker, 24, False, primary, header_w, 32, line_gap=3, min_size=18, max_lines=1)
-    draw_fitted_wrapped(d, (header_x, 88), data.get("marketing_title", "기술명"), 42, True, primary, header_w, 90, line_gap=5, min_size=30, max_lines=2)
+    draw_fitted_wrapped(d, (header_x, 45), kicker, 24, False, uni_primary, header_w, 32, line_gap=3, min_size=18, max_lines=1)
+    draw_fitted_wrapped(d, (header_x, 82), data.get("marketing_title", "기술명"), 42, True, uni_primary, header_w, 82, line_gap=5, min_size=30, max_lines=2)
 
-    sub_x, sub_y, sub_w, sub_h = header_x, 186, header_w, 46
-    d.rounded_rectangle((sub_x, sub_y, sub_x+sub_w, sub_y+sub_h), radius=16, fill=(255,255,255), outline=line, width=1)
+    sub_x, sub_y, sub_w, sub_h = header_x, 176, header_w, 46
+    d.rounded_rectangle((sub_x, sub_y, sub_x+sub_w, sub_y+sub_h), radius=16, fill=(255,255,255), outline=uni_line, width=1)
     draw_fitted_wrapped(d, (sub_x+22, sub_y+11), data.get("subtitle", ""), 22, False, gray, sub_w-44, sub_h-18, line_gap=4, min_size=16, max_lines=1)
 
-    X = 90
+    # 본문 공통 컨테이너 폭 확대: 헤더와 시각적 너비 균형 맞춤
+    X = 50
     CW = W - X*2
 
-    # Applications: 3개 개별 박스가 아니라 큰 박스 1개 안에 3개 배치
-    app_y = 300
-    app_h = 252
+    # Applications: 기술 제품 영역은 PIUM/Tech Blue 계열로 고정
+    app_y = 292
+    app_h = 232
     draw_card(d, (X, app_y, X+CW, app_y+app_h), radius=24, fill=(255,255,255), outline=line, width=2)
     draw_section_title(d, X+28, app_y+22, "적용분야 / 제품", f_sec, primary)
     apps = data.get("applications", [])[:3]
-    inner_y = app_y + 76
-    col_gap = 28
+    inner_y = app_y + 72
+    col_gap = 24
     col_w = (CW - 56 - col_gap*2)//3
     for i in range(3):
         x = X + 28 + i*(col_w+col_gap)
-        # 은은한 내부 영역과 구분선
         if i > 0:
             sep_x = x - col_gap//2
-            d.line((sep_x, inner_y+8, sep_x, app_y+app_h-28), fill=mix(line, (255,255,255), 0.35), width=1)
+            d.line((sep_x, inner_y+6, sep_x, app_y+app_h-28), fill=mix(line, (255,255,255), 0.20), width=1)
         if i < len(app_imgs):
-            icon = fit_image(app_imgs[i], (126, 94), bg=(255,255,255))
-            im.paste(icon, (x + (col_w-126)//2, inner_y))
+            icon = fit_image(app_imgs[i], (128, 96), bg=(255,255,255))
+            im.paste(icon, (x + (col_w-128)//2, inner_y))
         app = apps[i] if i < len(apps) else {"name":"", "description":""}
-        draw_fitted_wrapped(d, (x+10, inner_y+108), app.get("name", ""), 20, True, black, col_w-20, 52, line_gap=4, min_size=14, max_lines=2)
+        draw_fitted_wrapped(d, (x+10, inner_y+112), app.get("name", ""), 20, True, black, col_w-20, 48, line_gap=4, min_size=14, max_lines=2)
 
-    # Overview / differentiation
-    y = 585
+    # Overview / Differentiation
+    y = 552
     left_x = X
     right_x = X + CW//2 + 15
     box_w = CW//2 - 15
-    box_h = 302
-    draw_card(d, (left_x, y, left_x+box_w, y+box_h), radius=24, fill=sky2, outline=line, width=2)
-    draw_card(d, (right_x, y, right_x+box_w, y+box_h), radius=24, fill=sky2, outline=line, width=2)
+    box_h = 292
+    draw_card(d, (left_x, y, left_x+box_w, y+box_h), radius=24, fill=sky, outline=line, width=2)
+    draw_card(d, (right_x, y, right_x+box_w, y+box_h), radius=24, fill=sky, outline=line, width=2)
     draw_section_title(d, left_x+28, y+24, "기술개요", f_sec, primary)
     draw_section_title(d, right_x+28, y+24, "핵심 차별성", f_sec, primary)
-    draw_bullets_fit(d, left_x+34, y+80, data.get("overview", [])[:3], 18, False, black, box_w-68, box_h-105, bullet="›", line_gap=5, item_gap=8, min_size=13, max_lines_per_item=3)
-    draw_bullets_fit(d, right_x+34, y+80, data.get("differentiation", [])[:3], 18, False, black, box_w-68, box_h-105, bullet="›", line_gap=5, item_gap=8, min_size=13, max_lines_per_item=3)
+    draw_bullets_fit(d, left_x+34, y+80, data.get("overview", [])[:3], 18, False, black, box_w-68, box_h-104, bullet="›", line_gap=5, item_gap=8, min_size=13, max_lines_per_item=3)
+    draw_bullets_fit(d, right_x+34, y+80, data.get("differentiation", [])[:3], 18, False, black, box_w-68, box_h-104, bullet="›", line_gap=5, item_gap=8, min_size=13, max_lines_per_item=3)
 
-    # Drawing / competitiveness
-    y = 920
-    comp_h = 340
+    # Representative drawing / competitiveness
+    y = 878
+    comp_h = 346
     draw_card(d, (left_x, y, left_x+box_w, y+comp_h), radius=24, fill=(255,255,255), outline=line, width=2)
     draw_card(d, (right_x, y, right_x+box_w, y+comp_h), radius=24, fill=(255,255,255), outline=line, width=2)
     draw_section_title(d, left_x+28, y+24, "대표도면", f_sec, primary)
     draw_section_title(d, right_x+28, y+24, "기술 경쟁력", f_sec, primary)
-    rep = fit_image(rep_img, (box_w-100, 226), bg=(255,255,255))
-    im.paste(rep, (left_x+50, y+84))
+    rep = fit_image(rep_img, (box_w-90, 230), bg=(255,255,255))
+    im.paste(rep, (left_x+45, y+84))
 
     sub_y1 = y + 76
-    sub_h1 = 110
+    sub_h1 = 112
     d.rounded_rectangle((right_x+32, sub_y1, right_x+box_w-32, sub_y1+sub_h1), radius=16, fill=(255,255,255), outline=line, width=1)
-    d.text((right_x+52, sub_y1+14), "기존기술 한계", font=f_card, fill=accent)
+    d.text((right_x+52, sub_y1+14), "기존기술 한계", font=f_card, fill=gray)
     draw_bullets_fit(d, right_x+52, sub_y1+46, data.get("limitations", [])[:2], 15, False, black, box_w-105, sub_h1-52, bullet="•", line_gap=4, item_gap=3, min_size=11, max_lines_per_item=2)
 
     sub_y2 = sub_y1 + sub_h1 + 18
@@ -653,10 +673,10 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     d.text((right_x+52, sub_y2+14), "기술적 우위", font=f_card, fill=secondary)
     draw_bullets_fit(d, right_x+52, sub_y2+46, data.get("technical_advantages", [])[:2], 15, False, primary, box_w-105, sub_h2-52, bullet="▸", line_gap=4, item_gap=4, min_size=11, max_lines_per_item=2)
 
-    # IP / contact
-    y = 1292
+    # IP
+    y = 1255
     ip = normalize_ip(data.get("ip", {}))
-    ip_h = 194
+    ip_h = 192
     draw_card(d, (X, y, X+CW, y+ip_h), radius=22, fill=sky2, outline=line, width=2)
     draw_section_title(d, X+28, y+20, "지식재산권 현황", f_sec, primary)
     table_x, table_y = X+28, y+66
@@ -667,15 +687,16 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     for xx in [table_x+col1, table_x+col1+col2]:
         d.line((xx, table_y, xx, table_y+table_h), fill=line, width=1)
     d.text((table_x+18, table_y+8), "발명의 명칭", font=f_card, fill=black)
-    d.text((table_x+col1+18, table_y+3), "출원번호\n(등록번호)", font=f_small, fill=black, spacing=1)
-    d.text((table_x+col1+col2+18, table_y+3), "출원일자\n(등록일자)", font=f_small, fill=black, spacing=1)
+    d.text((table_x+col1+18, table_y+3), "출원번호\n(등록번호)", font=load_font(15, False), fill=black, spacing=1)
+    d.text((table_x+col1+col2+18, table_y+3), "출원일자\n(등록일자)", font=load_font(15, False), fill=black, spacing=1)
     draw_fitted_wrapped(d, (table_x+18, table_y+51), ip["title"] or data.get("original_title", ""), 14, False, black, col1-35, table_h-52, line_gap=3, min_size=10, max_lines=2)
     num_text = f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number']
     date_text = f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date']
     draw_fitted_wrapped(d, (table_x+col1+18, table_y+50), num_text, 18, False, black, col2-36, table_h-50, line_gap=3, min_size=12, max_lines=2)
     draw_fitted_wrapped(d, (table_x+col1+col2+18, table_y+50), date_text, 18, False, black, col3-36, table_h-50, line_gap=3, min_size=12, max_lines=2)
 
-    y = 1516
+    # Contact
+    y = 1480
     contact_h = 78
     d.rounded_rectangle((X, y, X+CW, y+contact_h), radius=20, fill=(255,255,255), outline=line, width=2)
     d.text((X+28, y+23), "문의처", font=f_sec, fill=primary)
@@ -730,75 +751,82 @@ def add_rect(slide, x, y, w, h, fill=(255,255,255), outline=(220,230,242), radiu
     return shp
 
 def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str, university_logo: Image.Image | None = None, pium_logo: Image.Image | None = None) -> bytes:
+    """PPTX 수정용: PDF 이미지와 동일한 박스형 레이아웃을 편집 가능한 텍스트/이미지 객체로 구성."""
+    pal = get_visual_palette(university_logo)
+    uni_primary = pal["uni_primary"]
+    uni_pale = pal["uni_pale"]
+    uni_line = pal["uni_line"]
+    primary = pal["pium_blue"]
+    secondary = pal["tech_blue"]
+    sky = pal["tech_pale"]
+    sky2 = pal["tech_pale2"]
+    line = pal["tech_line"]
+    table_header = pal["table_header"]
+    black = pal["black"]
+    gray = pal["gray"]
+
     prs = Presentation()
     prs.slide_width = Inches(10)
     prs.slide_height = Inches(14.145)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
 
-    theme = extract_logo_theme(university_logo)
-    primary = theme["primary"]; secondary = theme["secondary"]; accent = theme["accent"]
-    sky = theme["pale"]; sky2 = theme["pale2"]; line = theme["line"]
-    black = theme["black"]; gray = theme["gray"]
-    table_header = mix(primary, (255,255,255), 0.88)
-
     # Header
-    add_rect(slide, 0, 0, 1240, 252, fill=sky, outline=sky)
-    left_logo_box = make_university_logo_box(university_logo, data.get('university',''), size=(150,150), bg=sky, primary=primary)
-    slide.shapes.add_picture(img_bytes(left_logo_box), px(0), px(0), width=px(150), height=px(150))
+    add_rect(slide, 0, 0, 1240, 246, fill=uni_pale, outline=uni_pale)
+    left_logo_box = make_university_logo_box(university_logo, data.get('university',''), size=(145,145), bg=uni_pale, primary=uni_primary)
+    slide.shapes.add_picture(img_bytes(left_logo_box), px(0), px(0), width=px(145), height=px(145))
     pium_canvas = make_transparent_logo_canvas(pium_logo, size=(150,86), padding=4)
     slide.shapes.add_picture(img_bytes(pium_canvas), px(1062), px(34), width=px(150), height=px(86))
-    add_textbox(slide, 190, 48, 820, 32, f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} 교수", 13, False, primary)
-    add_textbox(slide, 190, 88, 820, 88, data.get("marketing_title", ""), 24, True, primary)
-    add_rect(slide, 190, 186, 820, 46, fill=(255,255,255), outline=line, radius=True)
-    add_textbox(slide, 212, 197, 776, 26, data.get("subtitle", ""), 12, False, gray)
+    add_textbox(slide, 190, 45, 825, 32, f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} 교수", 13, False, uni_primary)
+    add_textbox(slide, 190, 82, 825, 82, data.get("marketing_title", ""), 24, True, uni_primary)
+    add_rect(slide, 190, 176, 825, 46, fill=(255,255,255), outline=uni_line, radius=True)
+    add_textbox(slide, 212, 187, 780, 26, data.get("subtitle", ""), 12, False, gray)
 
-    X=90; CW=1060
-    # Application one outer box
-    app_y=300; app_h=252
+    X=50; CW=1140
+    app_y=292; app_h=232
     add_rect(slide, X, app_y, CW, app_h, fill=(255,255,255), outline=line, radius=True)
     add_textbox(slide, X+28, app_y+22, 300, 40, "적용분야 / 제품", 15, True, primary)
-    col_gap=28; col_w=(CW-56-col_gap*2)//3; inner_y=app_y+76
+    col_gap=24; col_w=(CW-56-col_gap*2)//3; inner_y=app_y+72
+    apps=data.get("applications", [])[:3]
     for i in range(3):
-        app = data.get("applications", [])[:3][i] if i < len(data.get("applications", [])[:3]) else {"name":""}
+        app = apps[i] if i < len(apps) else {"name":""}
         x=X+28+i*(col_w+col_gap)
         if i < len(app_imgs):
-            slide.shapes.add_picture(img_bytes(fit_image(app_imgs[i], (126,94))), px(x+(col_w-126)//2), px(inner_y), width=px(126), height=px(94))
-        add_textbox(slide, x+10, inner_y+108, col_w-20, 54, app.get("name", ""), 11, True, black)
+            slide.shapes.add_picture(img_bytes(fit_image(app_imgs[i], (128,96))), px(x+(col_w-128)//2), px(inner_y), width=px(128), height=px(96))
+        add_textbox(slide, x+10, inner_y+112, col_w-20, 48, app.get("name", ""), 11, True, black)
 
     left_x=X; right_x=X+CW//2+15; box_w=CW//2-15
-    y=585; box_h=302
+    y=552; box_h=292
     for x,title,items in [(left_x,"기술개요",data.get("overview",[])[:3]),(right_x,"핵심 차별성",data.get("differentiation",[])[:3])]:
-        add_rect(slide, x, y, box_w, box_h, fill=sky2, outline=line, radius=True)
+        add_rect(slide, x, y, box_w, box_h, fill=sky, outline=line, radius=True)
         add_textbox(slide, x+28, y+24, 250, 35, title, 15, True, primary)
-        add_textbox(slide, x+34, y+80, box_w-68, 210, "\n".join(["› "+str(v) for v in items]), 10, False, black)
+        add_textbox(slide, x+34, y+80, box_w-68, 195, "\n".join(["› "+str(v) for v in items]), 10, False, black)
 
-    y=920; comp_h=340
+    y=878; comp_h=346
     add_rect(slide, left_x, y, box_w, comp_h, fill=(255,255,255), outline=line, radius=True)
     add_rect(slide, right_x, y, box_w, comp_h, fill=(255,255,255), outline=line, radius=True)
     add_textbox(slide, left_x+28, y+24, 250, 35, "대표도면", 15, True, primary)
-    slide.shapes.add_picture(img_bytes(fit_image(rep_img, (box_w-100,226))), px(left_x+50), px(y+84), width=px(box_w-100), height=px(226))
+    slide.shapes.add_picture(img_bytes(fit_image(rep_img, (box_w-90,230))), px(left_x+45), px(y+84), width=px(box_w-90), height=px(230))
     add_textbox(slide, right_x+28, y+24, 250, 35, "기술 경쟁력", 15, True, primary)
-    add_rect(slide, right_x+32, y+76, box_w-64, 110, fill=(255,255,255), outline=line, radius=True)
-    add_textbox(slide, right_x+52, y+90, 260, 28, "기존기술 한계", 11, True, accent)
-    add_textbox(slide, right_x+52, y+122, box_w-105, 52, "\n".join(["• "+str(v) for v in data.get("limitations",[])[:2]]), 8.5, False, black)
-    add_rect(slide, right_x+32, y+204, box_w-64, 124, fill=sky2, outline=line, radius=True)
-    add_textbox(slide, right_x+52, y+218, 260, 28, "기술적 우위", 11, True, secondary)
-    add_textbox(slide, right_x+52, y+250, box_w-105, 62, "\n".join(["▸ "+str(v) for v in data.get("technical_advantages",[])[:2]]), 8.5, False, primary)
+    add_rect(slide, right_x+32, y+76, box_w-64, 112, fill=(255,255,255), outline=line, radius=True)
+    add_textbox(slide, right_x+52, y+90, 260, 28, "기존기술 한계", 11, True, gray)
+    add_textbox(slide, right_x+52, y+122, box_w-105, 54, "\n".join(["• "+str(v) for v in data.get("limitations",[])[:2]]), 8.5, False, black)
+    add_rect(slide, right_x+32, y+206, box_w-64, 124, fill=sky2, outline=line, radius=True)
+    add_textbox(slide, right_x+52, y+220, 260, 28, "기술적 우위", 11, True, secondary)
+    add_textbox(slide, right_x+52, y+252, box_w-105, 62, "\n".join(["▸ "+str(v) for v in data.get("technical_advantages",[])[:2]]), 8.5, False, primary)
 
-    y=1292; ip=normalize_ip(data.get("ip",{})); ip_h=194
+    y=1255; ip=normalize_ip(data.get("ip",{})); ip_h=192
     add_rect(slide, X, y, CW, ip_h, fill=sky2, outline=line, radius=True)
     add_textbox(slide, X+28, y+20, 300, 35, "지식재산권 현황", 15, True, primary)
     add_rect(slide, X+28, y+66, CW-56, 96, fill=(255,255,255), outline=line)
-    # table header fill overlay
     add_rect(slide, X+28, y+66, CW-56, 38, fill=table_header, outline=line)
-    add_textbox(slide, X+46, y+74, 380, 30, "발명의 명칭", 11, True, black)
-    add_textbox(slide, X+465, y+70, 250, 36, "출원번호\n(등록번호)", 9, True, black)
-    add_textbox(slide, X+760, y+70, 250, 36, "출원일자\n(등록일자)", 9, True, black)
-    add_textbox(slide, X+46, y+116, 390, 48, ip["title"] or data.get("original_title",""), 8, False, black)
-    add_textbox(slide, X+465, y+116, 250, 48, f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number'], 10, False, black)
-    add_textbox(slide, X+760, y+116, 250, 48, f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date'], 10, False, black)
+    add_textbox(slide, X+46, y+74, 400, 30, "발명의 명칭", 11, True, black)
+    add_textbox(slide, X+485, y+70, 250, 36, "출원번호\n(등록번호)", 9, True, black)
+    add_textbox(slide, X+790, y+70, 250, 36, "출원일자\n(등록일자)", 9, True, black)
+    add_textbox(slide, X+46, y+116, 420, 48, ip["title"] or data.get("original_title",""), 8, False, black)
+    add_textbox(slide, X+485, y+116, 250, 48, f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number'], 10, False, black)
+    add_textbox(slide, X+790, y+116, 250, 48, f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date'], 10, False, black)
 
-    y=1516
+    y=1480
     add_rect(slide, X, y, CW, 78, fill=(255,255,255), outline=line, radius=True)
     add_textbox(slide, X+28, y+23, 120, 35, "문의처", 15, True, primary)
     add_textbox(slide, X+150, y+27, CW-180, 32, contact, 10, False, black)
