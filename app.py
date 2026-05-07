@@ -23,7 +23,7 @@ IMAGE_MODEL_FIXED = "gpt-image-1"
 
 UNIVERSITIES = [
     "부산대학교", "국립부경대학교", "국립한국해양대학교", "동아대학교", "동의대학교", "동서대학교",
-    "동명대학교", "신라대학교", "울산대학교", "경남대학교", "경상대학교", "국립창원대학교", "인제대학교", "수기입력"
+    "동명대학교", "신라대학교", "울산대학교", "경남대학교", "경상대학교", "창원대학교", "인제대학교", "수기입력"
 ]
 
 st.set_page_config(page_title="PIUM Tech Brief 생성기", page_icon="📄", layout="wide")
@@ -117,16 +117,32 @@ def get_pium_logo_image() -> Image.Image | None:
     return get_logo_image("PIUM")
 
 def get_piumlink_logo_image() -> Image.Image | None:
-    """logo.zip 또는 프로젝트 루트에서 PIUMLINK 로고를 불러온다."""
-    img = get_logo_image("PIUMLINK")
-    if img is not None:
-        return img
-    for path in ["PIUMLINK.png", os.path.join(os.getcwd(), "PIUMLINK.png"), os.path.join(os.path.dirname(__file__), "PIUMLINK.png") if "__file__" in globals() else "PIUMLINK.png"]:
-        if path and os.path.exists(path):
+    """logo.zip 또는 프로젝트 루트에서 PIUMLINK 로고를 불러온다.
+    파일명이 PIUMLINK.png, PIUM_LINK.png, 피움링크.png 등으로 들어와도 최대한 탐색한다.
+    """
+    # 1) logo.zip에서 정확명/느슨한 이름으로 탐색
+    logos = prepare_logo_assets()
+    for key, path in logos.items():
+        norm = re.sub(r"[^0-9a-zA-Z가-힣]", "", str(key)).lower()
+        if norm in ("piumlink", "pium링크", "피움링크") or ("pium" in norm and "link" in norm):
             try:
                 return Image.open(path).convert("RGBA")
             except Exception:
                 pass
+
+    # 2) 프로젝트 루트/앱 폴더 직접 파일 탐색
+    roots = [os.getcwd()]
+    if "__file__" in globals():
+        roots.append(os.path.dirname(__file__))
+    candidates = ["PIUMLINK.png", "PIUM_LINK.png", "piumlink.png", "PiumLink.png", "피움링크.png"]
+    for root in roots:
+        for fname in candidates:
+            path = os.path.join(root, fname)
+            if os.path.exists(path):
+                try:
+                    return Image.open(path).convert("RGBA")
+                except Exception:
+                    pass
     return None
 
 def fit_logo_on_blue(src: Image.Image, size: Tuple[int, int], bg=(0,55,135), padding=16) -> Image.Image:
@@ -1030,11 +1046,11 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
 
     # Applications: 대학 로고 대표색 계열 accent 적용
     app_y = 292
-    app_h = 232
+    app_h = 238
     draw_card(d, (X, app_y, X+CW, app_y+app_h), radius=24, fill=(255,255,255), outline=line, width=2)
     draw_section_title(d, X+28, app_y+22, "적용분야 / 제품", f_sec, primary)
     apps = data.get("applications", [])[:3]
-    inner_y = app_y + 72
+    inner_y = app_y + 64
     col_gap = 24
     col_w = (CW - 56 - col_gap*2)//3
     for i in range(3):
@@ -1043,14 +1059,14 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
             sep_x = x - col_gap//2
             d.line((sep_x, inner_y+6, sep_x, app_y+app_h-28), fill=mix(line, (255,255,255), 0.20), width=1)
         if i < len(app_imgs):
-            icon_w, icon_h = 190, 118
+            icon_w, icon_h = 175, 104
             icon = fit_image(app_imgs[i], (icon_w, icon_h), bg=(255,255,255), trim=True)
-            im.paste(icon, (x + (col_w-icon_w)//2, inner_y-6))
+            im.paste(icon, (x + (col_w-icon_w)//2, inner_y-2))
         app = apps[i] if i < len(apps) else {"name":"", "description":""}
-        draw_centered_wrapped(d, (x+10, inner_y+128, x+col_w-10, inner_y+174), app.get("name", ""), load_font(20, True), black, max_lines=2, line_gap=4)
+        draw_centered_wrapped(d, (x+10, app_y+178, x+col_w-10, app_y+app_h-14), app.get("name", ""), load_font(19, True), black, max_lines=2, line_gap=3)
 
     # Overview / Differentiation
-    y = 552
+    y = 560
     left_x = X
     right_x = X + CW//2 + 15
     box_w = CW//2 - 15
@@ -1063,13 +1079,13 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     draw_bullets_fit(d, right_x+34, y+80, data.get("differentiation", [])[:3], 18, False, black, box_w-68, box_h-104, bullet="›", line_gap=5, item_gap=8, min_size=13, max_lines_per_item=3)
 
     # Representative drawing / competitiveness
-    y = 878
-    comp_h = 346
+    y = 888
+    comp_h = 334
     draw_card(d, (left_x, y, left_x+box_w, y+comp_h), radius=24, fill=(255,255,255), outline=line, width=2)
     draw_card(d, (right_x, y, right_x+box_w, y+comp_h), radius=24, fill=(255,255,255), outline=line, width=2)
     draw_section_title(d, left_x+28, y+24, "대표도면", f_sec, primary)
     draw_section_title(d, right_x+28, y+24, "기술 경쟁력", f_sec, primary)
-    rep_w, rep_h = box_w - 60, 246
+    rep_w, rep_h = box_w - 60, 232
     rep = fit_image(rep_img, (rep_w, rep_h), bg=(255,255,255), trim=True)
     im.paste(rep, (left_x+30, y+78))
 
@@ -1086,7 +1102,7 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     draw_bullets_fit(d, right_x+52, sub_y2+46, data.get("technical_advantages", [])[:2], 15, False, primary, box_w-105, sub_h2-52, bullet="▸", line_gap=4, item_gap=4, min_size=11, max_lines_per_item=2)
 
     # IP
-    y = 1255
+    y = 1258
     ip = normalize_ip(data.get("ip", {}))
     ip_h = 192
     draw_card(d, (X, y, X+CW, y+ip_h), radius=22, fill=sky2, outline=line, width=2)
@@ -1118,8 +1134,8 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
         im.paste(qr, (qr_x, qr_y))
 
     # Contact
-    y = 1480
-    contact_h = 78
+    y = 1482
+    contact_h = 76
     d.rounded_rectangle((X, y, X+CW, y+contact_h), radius=20, fill=(255,255,255), outline=line, width=2)
     d.text((X+28, y+23), "문의처", font=f_sec, fill=primary)
     draw_fitted_wrapped(d, (X+150, y+27), contact, 18, False, black, CW-180, 32, line_gap=4, min_size=12, max_lines=1)
@@ -1211,31 +1227,31 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     add_textbox(slide, 212, 187, 780, 26, data.get("subtitle", ""), 12, False, gray)
 
     X=28; CW=1184
-    app_y=292; app_h=232
+    app_y=292; app_h=238
     add_rect(slide, X, app_y, CW, app_h, fill=(255,255,255), outline=line, radius=True)
     add_textbox(slide, X+28, app_y+22, 300, 40, "적용분야 / 제품", 15, True, primary)
-    col_gap=24; col_w=(CW-56-col_gap*2)//3; inner_y=app_y+72
+    col_gap=24; col_w=(CW-56-col_gap*2)//3; inner_y=app_y+64
     apps=data.get("applications", [])[:3]
     for i in range(3):
         app = apps[i] if i < len(apps) else {"name":""}
         x=X+28+i*(col_w+col_gap)
         if i < len(app_imgs):
-            icon_w, icon_h = 190, 118
-            slide.shapes.add_picture(img_bytes(fit_image(app_imgs[i], (icon_w, icon_h), trim=True)), px(x+(col_w-icon_w)//2), px(inner_y-6), width=px(icon_w), height=px(icon_h))
-        add_textbox(slide, x+10, inner_y+128, col_w-20, 48, app.get("name", ""), 11, True, black, align=PP_ALIGN.CENTER)
+            icon_w, icon_h = 175, 104
+            slide.shapes.add_picture(img_bytes(fit_image(app_imgs[i], (icon_w, icon_h), trim=True)), px(x+(col_w-icon_w)//2), px(inner_y-2), width=px(icon_w), height=px(icon_h))
+        add_textbox(slide, x+10, app_y+178, col_w-20, 42, app.get("name", ""), 10.5, True, black, align=PP_ALIGN.CENTER)
 
     left_x=X; right_x=X+CW//2+15; box_w=CW//2-15
-    y=552; box_h=292
+    y=560; box_h=292
     for x,title,items in [(left_x,"기술개요",data.get("overview",[])[:3]),(right_x,"핵심 차별성",data.get("differentiation",[])[:3])]:
         add_rect(slide, x, y, box_w, box_h, fill=sky, outline=line, radius=True)
         add_textbox(slide, x+28, y+24, 250, 35, title, 15, True, primary)
         add_textbox(slide, x+34, y+80, box_w-68, 195, "\n".join(["› "+str(v) for v in items]), 10, False, black)
 
-    y=878; comp_h=346
+    y=888; comp_h=334
     add_rect(slide, left_x, y, box_w, comp_h, fill=(255,255,255), outline=line, radius=True)
     add_rect(slide, right_x, y, box_w, comp_h, fill=(255,255,255), outline=line, radius=True)
     add_textbox(slide, left_x+28, y+24, 250, 35, "대표도면", 15, True, primary)
-    rep_w, rep_h = box_w-60, 246
+    rep_w, rep_h = box_w-60, 232
     slide.shapes.add_picture(img_bytes(fit_image(rep_img, (rep_w, rep_h), trim=True)), px(left_x+30), px(y+78), width=px(rep_w), height=px(rep_h))
     add_textbox(slide, right_x+28, y+24, 250, 35, "기술 경쟁력", 15, True, primary)
     add_rect(slide, right_x+32, y+76, box_w-64, 112, fill=(255,255,255), outline=line, radius=True)
@@ -1245,7 +1261,7 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     add_textbox(slide, right_x+52, y+220, 260, 28, "기술적 우위", 11, True, secondary)
     add_textbox(slide, right_x+52, y+252, box_w-105, 62, "\n".join(["▸ "+str(v) for v in data.get("technical_advantages",[])[:2]]), 8.5, False, primary)
 
-    y=1255; ip=normalize_ip(data.get("ip",{})); ip_h=192
+    y=1258; ip=normalize_ip(data.get("ip",{})); ip_h=192
     add_rect(slide, X, y, CW, ip_h, fill=sky2, outline=line, radius=True)
     add_textbox(slide, X+28, y+20, 300, 35, "지식재산권 현황", 15, True, primary)
     add_rect(slide, X+28, y+66, CW-56, 96, fill=(255,255,255), outline=line)
@@ -1271,12 +1287,47 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
         qr_box = fit_image(qr_img, (qr_size, qr_size), bg=(255,255,255), trim=True)
         slide.shapes.add_picture(img_bytes(qr_box), px(table_x+col1+col2+col3+(col4-qr_size)//2), px(table_y+41), width=px(qr_size), height=px(qr_size))
 
-    y=1480
+    y=1482
     add_rect(slide, X, y, CW, 78, fill=(255,255,255), outline=line, radius=True)
     add_textbox(slide, X+28, y+23, 120, 35, "문의처", 15, True, primary)
     add_textbox(slide, X+150, y+27, CW-180, 32, contact, 10, False, black)
 
     bio=BytesIO(); prs.save(bio); return bio.getvalue()
+
+
+
+def _ensure_len(seq, n, default):
+    out = list(seq or [])[:n]
+    while len(out) < n:
+        out.append(default() if callable(default) else default)
+    return out
+
+def build_data_from_edit_form(base: Dict[str, Any], university: str, department: str, professor: str, vals: Dict[str, Any]) -> Dict[str, Any]:
+    """Streamlit 입력 폼 값을 내부 JSON 구조로 재조립한다."""
+    return {
+        "marketing_title": vals.get("marketing_title", ""),
+        "subtitle": vals.get("subtitle", ""),
+        "original_title": vals.get("original_title", ""),
+        "university": university,
+        "department": department,
+        "professor": professor,
+        "applications": [
+            {"name": vals.get(f"app_name_{i}", ""), "description": vals.get(f"app_desc_{i}", "")}
+            for i in range(3)
+        ],
+        "overview": [vals.get(f"overview_{i}", "") for i in range(3) if vals.get(f"overview_{i}", "").strip()],
+        "differentiation": [vals.get(f"diff_{i}", "") for i in range(3) if vals.get(f"diff_{i}", "").strip()],
+        "limitations": [vals.get(f"limit_{i}", "") for i in range(2) if vals.get(f"limit_{i}", "").strip()],
+        "technical_advantages": [vals.get(f"adv_{i}", "") for i in range(2) if vals.get(f"adv_{i}", "").strip()],
+        "ip": {
+            "title": vals.get("ip_title", ""),
+            "application_number": vals.get("ip_application_number", ""),
+            "registration_number": vals.get("ip_registration_number", ""),
+            "application_date": vals.get("ip_application_date", ""),
+            "registration_date": vals.get("ip_registration_date", ""),
+            "applicant": vals.get("ip_applicant", ""),
+        },
+    }
 
 # -----------------------------------------------------
 # Streamlit UI
@@ -1310,7 +1361,7 @@ with st.sidebar:
 
 for key, default in {
     "data": None, "brief_image": None, "pdf_bytes": None, "pptx_bytes": None,
-    "pdf_path": None, "app_imgs": [], "rep_img": None, "qr_img": None
+    "pdf_path": None, "app_imgs": [], "rep_img": None, "qr_img": None, "edit_version": 0
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -1334,6 +1385,7 @@ if generate_btn:
         data = analyze_patent_with_gpt(patent_text, university, department, professor)
         data["university"] = university; data["department"] = department; data["professor"] = professor
         st.session_state.data = data
+        st.session_state.edit_version += 1
 
     app_imgs=[]
     if make_images:
@@ -1357,10 +1409,11 @@ if generate_btn:
         contact = f"{org} {name} {position}  |  {phone}  |  {email}"
         university_logo = get_logo_image(university) if use_logos else None
         pium_logo = get_pium_logo_image() if use_logos else None
-        brief = compose_tech_brief(data, rep_img, app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img)
+        piumlink_logo = get_piumlink_logo_image() if use_logos else None
+        brief = compose_tech_brief(data, rep_img, app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img, piumlink_logo)
         st.session_state.brief_image = brief
         st.session_state.pdf_bytes = make_pdf_bytes_from_image(brief)
-        st.session_state.pptx_bytes = make_pptx_bytes(data, rep_img, app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img)
+        st.session_state.pptx_bytes = make_pptx_bytes(data, rep_img, app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img, piumlink_logo)
 
 if st.session_state.data is None:
     st.info("왼쪽에서 정보를 입력하고 특허 PDF를 업로드한 뒤 'Tech Brief 생성'을 누르세요.")
@@ -1376,22 +1429,103 @@ else:
             st.download_button("PPTX 다운로드(수정용)", st.session_state.pptx_bytes, "PIUM_Tech_Brief.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", use_container_width=True)
 
     with col2:
-        st.subheader("생성 텍스트 직접 수정")
-        edited_json = st.text_area("JSON 수정 후 다시 렌더링할 수 있습니다.", value=json.dumps(st.session_state.data, ensure_ascii=False, indent=2), height=720)
-        if st.button("수정 내용으로 다시 생성", use_container_width=True):
-            try:
-                edited = json.loads(edited_json)
-            except Exception as e:
-                st.error(f"JSON 형식 오류: {e}"); st.stop()
-            edited["university"] = university; edited["department"] = department; edited["professor"] = professor
+        st.subheader("생성 텍스트 수정")
+        st.caption("JSON을 직접 고치지 않고 항목별 입력칸에서 수정할 수 있습니다.")
+
+        data_now = st.session_state.data or {}
+        apps_now = _ensure_len(data_now.get("applications", []), 3, lambda: {"name": "", "description": ""})
+        overview_now = _ensure_len(data_now.get("overview", []), 3, "")
+        diff_now = _ensure_len(data_now.get("differentiation", []), 3, "")
+        limit_now = _ensure_len(data_now.get("limitations", []), 2, "")
+        adv_now = _ensure_len(data_now.get("technical_advantages", []), 2, "")
+        ip_now = normalize_ip(data_now.get("ip", {}))
+        k = f"edit_v{st.session_state.edit_version}"
+
+        with st.form("edit_text_form"):
+            st.markdown("#### 기본 정보")
+            marketing_title = st.text_input("기술명", value=data_now.get("marketing_title", ""), key=f"{k}_marketing_title")
+            subtitle = st.text_input("한 줄 요약", value=data_now.get("subtitle", ""), key=f"{k}_subtitle")
+            original_title = st.text_input("원 발명의 명칭", value=data_now.get("original_title", ""), key=f"{k}_original_title")
+
+            st.markdown("#### 적용분야 / 제품")
+            app_vals = []
+            for i in range(3):
+                with st.expander(f"적용분야 {i+1}", expanded=True):
+                    app_name = st.text_input(f"적용분야 {i+1} 명칭", value=apps_now[i].get("name", ""), key=f"{k}_app_name_{i}")
+                    app_desc = st.text_area(f"적용분야 {i+1} 설명", value=apps_now[i].get("description", ""), height=70, key=f"{k}_app_desc_{i}")
+                    app_vals.append((app_name, app_desc))
+
+            st.markdown("#### 기술개요")
+            overview_vals = []
+            for i in range(3):
+                overview_vals.append(st.text_area(f"기술개요 {i+1}", value=overview_now[i], height=75, key=f"{k}_overview_{i}"))
+
+            st.markdown("#### 핵심 차별성")
+            diff_vals = []
+            for i in range(3):
+                diff_vals.append(st.text_area(f"핵심 차별성 {i+1}", value=diff_now[i], height=75, key=f"{k}_diff_{i}"))
+
+            st.markdown("#### 기술 경쟁력")
+            st.caption("기존기술 한계")
+            limit_vals = []
+            for i in range(2):
+                limit_vals.append(st.text_area(f"기존기술 한계 {i+1}", value=limit_now[i], height=70, key=f"{k}_limit_{i}"))
+            st.caption("기술적 우위")
+            adv_vals = []
+            for i in range(2):
+                adv_vals.append(st.text_area(f"기술적 우위 {i+1}", value=adv_now[i], height=70, key=f"{k}_adv_{i}"))
+
+            st.markdown("#### 지식재산권 현황")
+            ip_title = st.text_input("발명의 명칭", value=ip_now.get("title", ""), key=f"{k}_ip_title")
+            c_ip1, c_ip2 = st.columns(2)
+            with c_ip1:
+                ip_application_number = st.text_input("출원번호", value=ip_now.get("application_number", ""), key=f"{k}_ip_application_number")
+                ip_application_date = st.text_input("출원일자", value=ip_now.get("application_date", ""), key=f"{k}_ip_application_date")
+            with c_ip2:
+                ip_registration_number = st.text_input("등록번호", value=ip_now.get("registration_number", ""), key=f"{k}_ip_registration_number")
+                ip_registration_date = st.text_input("등록일자", value=ip_now.get("registration_date", ""), key=f"{k}_ip_registration_date")
+            ip_applicant = st.text_input("출원인", value=ip_now.get("applicant", ""), key=f"{k}_ip_applicant")
+
+            submitted = st.form_submit_button("수정 내용으로 PDF/PPTX 다시 생성", use_container_width=True)
+
+        if submitted:
+            vals = {
+                "marketing_title": marketing_title,
+                "subtitle": subtitle,
+                "original_title": original_title,
+                "ip_title": ip_title,
+                "ip_application_number": ip_application_number,
+                "ip_registration_number": ip_registration_number,
+                "ip_application_date": ip_application_date,
+                "ip_registration_date": ip_registration_date,
+                "ip_applicant": ip_applicant,
+            }
+            for i, (app_name, app_desc) in enumerate(app_vals):
+                vals[f"app_name_{i}"] = app_name
+                vals[f"app_desc_{i}"] = app_desc
+            for i, v in enumerate(overview_vals):
+                vals[f"overview_{i}"] = v
+            for i, v in enumerate(diff_vals):
+                vals[f"diff_{i}"] = v
+            for i, v in enumerate(limit_vals):
+                vals[f"limit_{i}"] = v
+            for i, v in enumerate(adv_vals):
+                vals[f"adv_{i}"] = v
+
+            edited = build_data_from_edit_form(data_now, university, department, professor, vals)
             contact = f"{org} {name} {position}  |  {phone}  |  {email}"
             rep_img = st.session_state.rep_img or extract_representative_drawing(st.session_state.pdf_path)
             university_logo = get_logo_image(university) if use_logos else None
             pium_logo = get_pium_logo_image() if use_logos else None
-            brief = compose_tech_brief(edited, rep_img, st.session_state.app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img)
+            piumlink_logo = get_piumlink_logo_image() if use_logos else None
+            brief = compose_tech_brief(edited, rep_img, st.session_state.app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img, piumlink_logo)
             st.session_state.data = edited
             st.session_state.brief_image = brief
             st.session_state.pdf_bytes = make_pdf_bytes_from_image(brief)
-            st.session_state.pptx_bytes = make_pptx_bytes(edited, rep_img, st.session_state.app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img)
+            st.session_state.pptx_bytes = make_pptx_bytes(edited, rep_img, st.session_state.app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img, piumlink_logo)
+            st.session_state.edit_version += 1
             st.success("수정 내용이 반영되었습니다.")
             st.rerun()
+
+        with st.expander("고급 사용자용 JSON 보기"):
+            st.json(st.session_state.data)
