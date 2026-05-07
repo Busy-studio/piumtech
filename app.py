@@ -3,6 +3,8 @@ import re
 import json
 import base64
 import tempfile
+import zipfile
+import shutil
 from io import BytesIO
 from typing import Any, Dict, List, Tuple
 
@@ -51,6 +53,91 @@ def load_font(size: int, bold: bool = False):
         if p and os.path.exists(p):
             return ImageFont.truetype(p, size)
     return ImageFont.load_default()
+
+
+# -----------------------------------------------------
+# Logo assets
+# -----------------------------------------------------
+LOGO_ZIP_PATH = "logo.zip"
+LOGO_EXTRACT_DIR = os.path.join(tempfile.gettempdir(), "pium_logo_assets")
+
+UNIV_ALIAS = {
+    "경상대학교": "경상국립대학교",
+    "창원대학교": "국립창원대학교",
+}
+
+def decode_zip_stem(name: str) -> str:
+    """logo.zip 내부의 #Uxxxx 형태 파일명을 실제 한글명으로 복원."""
+    stem = os.path.splitext(os.path.basename(name))[0]
+    def repl(m):
+        return chr(int(m.group(1), 16))
+    return re.sub(r"#U([0-9A-Fa-f]{4})", repl, stem)
+
+@st.cache_resource
+def prepare_logo_assets() -> Dict[str, str]:
+    logo_map: Dict[str, str] = {}
+    zip_path_candidates = [
+        LOGO_ZIP_PATH,
+        os.path.join(os.getcwd(), LOGO_ZIP_PATH),
+        os.path.join(os.path.dirname(__file__), LOGO_ZIP_PATH) if "__file__" in globals() else LOGO_ZIP_PATH,
+    ]
+    zip_path = next((z for z in zip_path_candidates if os.path.exists(z)), None)
+    if not zip_path:
+        return logo_map
+
+    os.makedirs(LOGO_EXTRACT_DIR, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            if not info.filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                continue
+            decoded_name = decode_zip_stem(info.filename)
+            ext = os.path.splitext(info.filename)[1].lower() or ".png"
+            out_path = os.path.join(LOGO_EXTRACT_DIR, decoded_name + ext)
+            with zf.open(info) as src, open(out_path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            logo_map[decoded_name] = out_path
+    return logo_map
+
+def get_logo_image(name: str) -> Image.Image | None:
+    if not name:
+        return None
+    logos = prepare_logo_assets()
+    key = UNIV_ALIAS.get(name, name)
+    path = logos.get(key) or logos.get(name)
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        return Image.open(path).convert("RGBA")
+    except Exception:
+        return None
+
+def get_pium_logo_image() -> Image.Image | None:
+    return get_logo_image("PIUM")
+
+def fit_logo_on_blue(src: Image.Image, size: Tuple[int, int], bg=(0,55,135), padding=16) -> Image.Image:
+    """투명 로고를 파란 박스 안에 비율 유지로 삽입."""
+    canvas = Image.new("RGBA", size, bg + (255,))
+    if src is None:
+        return canvas.convert("RGB")
+    im = src.copy().convert("RGBA")
+    max_w = max(1, size[0] - padding*2)
+    max_h = max(1, size[1] - padding*2)
+    im.thumbnail((max_w, max_h), Image.LANCZOS)
+    x = (size[0] - im.width)//2
+    y = (size[1] - im.height)//2
+    canvas.alpha_composite(im, (x,y))
+    return canvas.convert("RGB")
+
+def make_logo_box_image(logo_img: Image.Image | None, label: str, size=(155,155), bg=(0,55,135)) -> Image.Image:
+    box = fit_logo_on_blue(logo_img, size, bg=bg, padding=18)
+    if logo_img is None and label:
+        d = ImageDraw.Draw(box)
+        f = load_font(34, True)
+        bbox = d.textbbox((0,0), label, font=f)
+        d.text(((size[0]-(bbox[2]-bbox[0]))//2, (size[1]-(bbox[3]-bbox[1]))//2), label, font=f, fill="white")
+    return box
 
 # -----------------------------------------------------
 # PDF extraction
@@ -275,7 +362,7 @@ def normalize_ip(ip: Dict[str, Any]) -> Dict[str, str]:
         "applicant": str(ip.get("applicant") or ""),
     }
 
-def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str) -> Image.Image:
+def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str, university_logo: Image.Image | None = None, pium_logo: Image.Image | None = None) -> Image.Image:
     W, H = 1240, 1754
     im = Image.new("RGB", (W, H), "white")
     d = ImageDraw.Draw(im)
@@ -302,13 +389,19 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     # Background accents
     d.rectangle((0, 0, W, H), fill=(255,255,255))
     d.rectangle((0, 0, W, 278), fill=sky)
-    d.rectangle((0, 0, 155, 155), fill=navy)
-    d.text((34, 58), "PIUM", font=f_logo, fill="white")
-    d.text((190, 44), f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} 교수", font=f_kicker, fill=navy)
-    draw_wrapped(d, (190, 92), data.get("marketing_title", "기술명"), f_title, navy, 955, 5, max_lines=2)
-    draw_wrapped(d, (190, 214), data.get("subtitle", ""), f_sub, gray, 950, 5, max_lines=1)
 
-    M = 70
+    LOGO_BOX = 155
+    left_logo_box = make_logo_box_image(university_logo, data.get('university',''), size=(LOGO_BOX, LOGO_BOX), bg=navy)
+    right_logo_box = make_logo_box_image(pium_logo, "PIUM", size=(LOGO_BOX, LOGO_BOX), bg=navy)
+    im.paste(left_logo_box, (0, 0))
+    im.paste(right_logo_box, (W-LOGO_BOX, 0))
+
+    header_x = 190
+    header_w = W - LOGO_BOX*2 - 70
+    d.text((header_x, 44), f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} 교수", font=f_kicker, fill=navy)
+    draw_wrapped(d, (header_x, 92), data.get("marketing_title", "기술명"), f_title, navy, header_w, 5, max_lines=2)
+    draw_wrapped(d, (header_x, 214), data.get("subtitle", ""), f_sub, gray, header_w, 5, max_lines=1)
+
     X = 90
     CW = W - X*2
 
@@ -436,7 +529,7 @@ def add_rect(slide, x, y, w, h, fill=(255,255,255), outline=(220,230,242), radiu
     shp.line.width = Pt(1)
     return shp
 
-def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str) -> bytes:
+def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str, university_logo: Image.Image | None = None, pium_logo: Image.Image | None = None) -> bytes:
     prs = Presentation()
     prs.slide_width = Inches(10)
     prs.slide_height = Inches(14.145)
@@ -444,11 +537,13 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
 
     navy=(0,55,135); blue=(24,92,180); sky=(235,243,250); sky2=(245,249,252); black=(28,34,43); gray=(92,99,110); line=(209,220,232); cyan=(0,165,180)
     add_rect(slide, 0, 0, 1240, 278, fill=sky, outline=sky)
-    add_rect(slide, 0, 0, 155, 155, fill=navy, outline=navy)
-    add_textbox(slide, 34, 58, 100, 45, "PIUM", 20, True, (255,255,255))
-    add_textbox(slide, 190, 44, 980, 38, f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} 교수", 14, False, navy)
-    add_textbox(slide, 190, 92, 955, 105, data.get("marketing_title", ""), 26, True, navy)
-    add_textbox(slide, 190, 214, 950, 38, data.get("subtitle", ""), 15, False, gray)
+    left_logo_box = make_logo_box_image(university_logo, data.get('university',''), size=(155,155), bg=navy)
+    right_logo_box = make_logo_box_image(pium_logo, "PIUM", size=(155,155), bg=navy)
+    slide.shapes.add_picture(img_bytes(left_logo_box), px(0), px(0), width=px(155), height=px(155))
+    slide.shapes.add_picture(img_bytes(right_logo_box), px(1085), px(0), width=px(155), height=px(155))
+    add_textbox(slide, 190, 44, 860, 38, f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} 교수", 14, False, navy)
+    add_textbox(slide, 190, 92, 860, 105, data.get("marketing_title", ""), 26, True, navy)
+    add_textbox(slide, 190, 214, 860, 38, data.get("subtitle", ""), 15, False, gray)
 
     X=90; CW=1060; gap=28; card_w=(CW-gap*2)//3
     add_textbox(slide, X, 320, 300, 40, "적용분야 / 제품", 16, True, navy)
@@ -523,6 +618,7 @@ with st.sidebar:
 
     st.divider()
     make_images = st.checkbox("적용분야 이미지 생성", value=True, help="끄면 이미지 생성 비용이 발생하지 않습니다.")
+    use_logos = st.checkbox("상단 로고 자동 삽입", value=True, help="logo.zip 안의 대학 로고와 PIUM 로고를 사용합니다.")
     generate_btn = st.button("Tech Brief 생성", type="primary", use_container_width=True)
 
 for key, default in {
@@ -565,10 +661,12 @@ if generate_btn:
 
     with st.spinner("PDF/PPTX 구성 중..."):
         contact = f"{org} {name} {position}  |  {phone}  |  {email}"
-        brief = compose_tech_brief(data, rep_img, app_imgs, contact)
+        university_logo = get_logo_image(university) if use_logos else None
+        pium_logo = get_pium_logo_image() if use_logos else None
+        brief = compose_tech_brief(data, rep_img, app_imgs, contact, university_logo, pium_logo)
         st.session_state.brief_image = brief
         st.session_state.pdf_bytes = make_pdf_bytes_from_image(brief)
-        st.session_state.pptx_bytes = make_pptx_bytes(data, rep_img, app_imgs, contact)
+        st.session_state.pptx_bytes = make_pptx_bytes(data, rep_img, app_imgs, contact, university_logo, pium_logo)
 
 if st.session_state.data is None:
     st.info("왼쪽에서 정보를 입력하고 특허 PDF를 업로드한 뒤 'Tech Brief 생성'을 누르세요.")
@@ -594,10 +692,12 @@ else:
             edited["university"] = university; edited["department"] = department; edited["professor"] = professor
             contact = f"{org} {name} {position}  |  {phone}  |  {email}"
             rep_img = st.session_state.rep_img or extract_representative_drawing(st.session_state.pdf_path)
-            brief = compose_tech_brief(edited, rep_img, st.session_state.app_imgs, contact)
+            university_logo = get_logo_image(university) if use_logos else None
+            pium_logo = get_pium_logo_image() if use_logos else None
+            brief = compose_tech_brief(edited, rep_img, st.session_state.app_imgs, contact, university_logo, pium_logo)
             st.session_state.data = edited
             st.session_state.brief_image = brief
             st.session_state.pdf_bytes = make_pdf_bytes_from_image(brief)
-            st.session_state.pptx_bytes = make_pptx_bytes(edited, rep_img, st.session_state.app_imgs, contact)
+            st.session_state.pptx_bytes = make_pptx_bytes(edited, rep_img, st.session_state.app_imgs, contact, university_logo, pium_logo)
             st.success("수정 내용이 반영되었습니다.")
             st.rerun()
