@@ -1022,13 +1022,12 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     pium_canvas = make_transparent_logo_canvas(pium_logo, size=(150, 86), padding=4)
     im.paste(pium_canvas, (W-178, 34), pium_canvas)
 
-    # 우측 상단: PIUM 로고 아래에는 등록공보 QR이 아니라 PIUMLINK 로고를 배치
+    # 우측 상단: PIUM 로고 아래에는 PIUMLINK를 별도 박스 없이 크게 배치
     if piumlink_logo is not None:
-        link_w, link_h = 190, 62
-        link_x, link_y = W - link_w - 34, 132
-        d.rounded_rectangle((link_x, link_y, link_x+link_w, link_y+link_h), radius=14, fill=(255,255,255), outline=uni_line, width=1)
-        link = make_transparent_logo_canvas(piumlink_logo, size=(link_w-16, link_h-12), padding=2)
-        im.paste(link, (link_x+8, link_y+6), link)
+        link_w, link_h = 92, 92
+        link_x, link_y = W - link_w - 54, 118
+        link = make_transparent_logo_canvas(piumlink_logo, size=(link_w, link_h), padding=0)
+        im.paste(link, (link_x, link_y), link)
 
     header_x = 190
     header_w = W - header_x - 225
@@ -1104,12 +1103,16 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     # IP
     y = 1258
     ip = normalize_ip(data.get("ip", {}))
-    ip_h = 192
+    ip_h = 220
     draw_card(d, (X, y, X+CW, y+ip_h), radius=22, fill=sky2, outline=line, width=2)
     draw_section_title(d, X+28, y+20, "지식재산권 현황", f_sec, primary)
     table_x, table_y = X+28, y+66
-    table_w, table_h = CW-56, 96
-    col1, col2, col3, col4 = int(table_w*0.40), int(table_w*0.25), int(table_w*0.25), table_w - int(table_w*0.40) - int(table_w*0.25) - int(table_w*0.25)
+    table_w, table_h = CW-56, 124
+    # QR 스캔성을 위해 바로가기 열을 고정폭으로 넓게 확보
+    col4 = 132
+    col1 = int((table_w-col4)*0.42)
+    col2 = int((table_w-col4)*0.29)
+    col3 = table_w - col4 - col1 - col2
     d.rectangle((table_x, table_y, table_x+table_w, table_y+38), fill=table_header, outline=line)
     d.rectangle((table_x, table_y+38, table_x+table_w, table_y+table_h), fill=(255,255,255), outline=line)
     c1 = table_x + col1
@@ -1127,14 +1130,14 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     draw_centered_wrapped(d, (c1+10, table_y+42, c2-10, table_y+table_h-4), num_text, load_font(16, False), black, max_lines=2, line_gap=3)
     draw_centered_wrapped(d, (c2+10, table_y+42, c3-10, table_y+table_h-4), date_text, load_font(16, False), black, max_lines=2, line_gap=3)
     if qr_img is not None:
-        qr_size = 56
+        qr_size = 92
         qr = fit_image(qr_img, (qr_size, qr_size), bg=(255,255,255), trim=True)
         qr_x = c3 + (col4 - qr_size)//2
-        qr_y = table_y + 39 + (table_h - 38 - qr_size)//2
+        qr_y = table_y + 38 + (table_h - 38 - qr_size)//2
         im.paste(qr, (qr_x, qr_y))
 
     # Contact
-    y = 1482
+    y = 1510
     contact_h = 76
     d.rounded_rectangle((X, y, X+CW, y+contact_h), radius=20, fill=(255,255,255), outline=line, width=2)
     d.text((X+28, y+23), "문의처", font=f_sec, fill=primary)
@@ -1215,12 +1218,8 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     pium_canvas = make_transparent_logo_canvas(pium_logo, size=(150,86), padding=4)
     slide.shapes.add_picture(img_bytes(pium_canvas), px(1062), px(34), width=px(150), height=px(86))
     if piumlink_logo is not None:
-        link_box = Image.new("RGBA", (190,62), (255,255,255,0))
-        link_draw = ImageDraw.Draw(link_box)
-        link_draw.rounded_rectangle((0,0,189,61), radius=14, fill=(255,255,255,255), outline=uni_line+(255,), width=1)
-        link = make_transparent_logo_canvas(piumlink_logo, size=(174,50), padding=2)
-        link_box.alpha_composite(link, (8,6))
-        slide.shapes.add_picture(img_bytes(link_box), px(1016), px(132), width=px(190), height=px(62))
+        link = make_transparent_logo_canvas(piumlink_logo, size=(92,92), padding=0)
+        slide.shapes.add_picture(img_bytes(link), px(1094), px(118), width=px(92), height=px(92))
     add_textbox(slide, 190, 45, 825, 32, f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} 교수", 13, False, uni_primary)
     add_textbox(slide, 190, 82, 825, 82, data.get("marketing_title", ""), 24, True, uni_primary)
     add_rect(slide, 190, 176, 825, 46, fill=(255,255,255), outline=uni_line, radius=True)
@@ -1261,15 +1260,17 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     add_textbox(slide, right_x+52, y+220, 260, 28, "기술적 우위", 11, True, secondary)
     add_textbox(slide, right_x+52, y+252, box_w-105, 62, "\n".join(["▸ "+str(v) for v in data.get("technical_advantages",[])[:2]]), 8.5, False, primary)
 
-    y=1258; ip=normalize_ip(data.get("ip",{})); ip_h=192
+    y=1258; ip=normalize_ip(data.get("ip",{})); ip_h=220
     add_rect(slide, X, y, CW, ip_h, fill=sky2, outline=line, radius=True)
     add_textbox(slide, X+28, y+20, 300, 35, "지식재산권 현황", 15, True, primary)
-    add_rect(slide, X+28, y+66, CW-56, 96, fill=(255,255,255), outline=line)
+    add_rect(slide, X+28, y+66, CW-56, 124, fill=(255,255,255), outline=line)
     add_rect(slide, X+28, y+66, CW-56, 38, fill=table_header, outline=line)
     # 4열 표: 발명의 명칭 / 출원번호(등록번호) / 출원일자(등록일자) / 바로가기
-    table_x, table_y, table_w, table_h = X+28, y+66, CW-56, 96
-    col1, col2, col3 = int(table_w*0.40), int(table_w*0.25), int(table_w*0.25)
-    col4 = table_w - col1 - col2 - col3
+    table_x, table_y, table_w, table_h = X+28, y+66, CW-56, 124
+    col4 = 132
+    col1 = int((table_w-col4)*0.42)
+    col2 = int((table_w-col4)*0.29)
+    col3 = table_w - col4 - col1 - col2
     # 구분선
     for xx in [table_x+col1, table_x+col1+col2, table_x+col1+col2+col3]:
         line_shape = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, px(xx), px(table_y), px(1), px(table_h))
@@ -1283,11 +1284,11 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     add_textbox(slide, table_x+col1+8, table_y+46, col2-16, 44, f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number'], 9, False, black, align=PP_ALIGN.CENTER)
     add_textbox(slide, table_x+col1+col2+8, table_y+46, col3-16, 44, f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date'], 9, False, black, align=PP_ALIGN.CENTER)
     if qr_img is not None:
-        qr_size = 54
+        qr_size = 92
         qr_box = fit_image(qr_img, (qr_size, qr_size), bg=(255,255,255), trim=True)
-        slide.shapes.add_picture(img_bytes(qr_box), px(table_x+col1+col2+col3+(col4-qr_size)//2), px(table_y+41), width=px(qr_size), height=px(qr_size))
+        slide.shapes.add_picture(img_bytes(qr_box), px(table_x+col1+col2+col3+(col4-qr_size)//2), px(table_y+38+(table_h-38-qr_size)//2), width=px(qr_size), height=px(qr_size))
 
-    y=1482
+    y=1510
     add_rect(slide, X, y, CW, 78, fill=(255,255,255), outline=line, radius=True)
     add_textbox(slide, X+28, y+23, 120, 35, "문의처", 15, True, primary)
     add_textbox(slide, X+150, y+27, CW-180, 32, contact, 10, False, black)
