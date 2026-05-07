@@ -343,23 +343,60 @@ JSON 형식:
 def generate_application_image(title: str, desc: str) -> Image.Image:
     client = get_client()
     prompt = f"""
-Create a premium technology brief application icon for a Korean university tech-transfer one-page brochure.
+Create ONE icon from a unified premium technology icon set for a Korean university tech-transfer one-page brochure.
 Application: {title}
 Description: {desc}
 
-Visual style requirements:
-- white background only, no black background, no dark vignette, no gradient backdrop
-- modern futuristic colored flat-icon mixed with subtle realistic 3D detail
-- clean vector-like isometric composition
-- blue, cyan, white, light gray accents
+Mandatory visual style:
+- pure white background only, no black background, no dark vignette, no colored backdrop
+- consistent semi-isometric vector-flat illustration style
+- clean blue/cyan/white/light-gray palette with subtle 3D depth
+- same stroke thickness, same lighting direction, same icon scale
+- centered object with generous white margin
 - professional public-sector technology marketing style
-- centered object, generous white margin
 - no text, no letters, no logos, no watermark
 """
     result = client.images.generate(model=IMAGE_MODEL_FIXED, prompt=prompt, size="1024x1024")
     img_b64 = result.data[0].b64_json
     img = Image.open(BytesIO(base64.b64decode(img_b64))).convert("RGB")
     return clean_dark_background(img)
+
+def generate_application_images_set(apps: List[Dict[str, Any]]) -> List[Image.Image]:
+    """3개 적용분야 아이콘을 한 번에 생성 후 3등분해 그림체를 최대한 통일."""
+    client = get_client()
+    app_text = []
+    for idx, app in enumerate(apps[:3], 1):
+        app_text.append(f"{idx}. {app.get('name','')} - {app.get('description','')}")
+    joined = "\n".join(app_text)
+    prompt = f"""
+Create a horizontal set of THREE matching application icons for a Korean university technology brief.
+The three icons must look like they belong to the exact same icon family.
+
+Applications:
+{joined}
+
+Mandatory layout:
+- 3 separate icons arranged left, center, right with large white spacing
+- pure white background only
+- no dividers, no text, no labels, no logos, no watermark
+
+Mandatory unified visual style:
+- consistent semi-isometric vector-flat illustration style
+- clean blue/cyan/white/light-gray palette with subtle 3D depth
+- same stroke thickness, same lighting direction, same icon scale
+- centered objects, generous white margin
+- professional public-sector technology marketing style
+"""
+    result = client.images.generate(model=IMAGE_MODEL_FIXED, prompt=prompt, size="1536x1024")
+    img_b64 = result.data[0].b64_json
+    sheet = Image.open(BytesIO(base64.b64decode(img_b64))).convert("RGB")
+    sheet = clean_dark_background(sheet)
+    w, h = sheet.size
+    icons = []
+    for i in range(3):
+        crop = sheet.crop((i*w//3, 0, (i+1)*w//3, h))
+        icons.append(crop)
+    return icons
 
 # -----------------------------------------------------
 # Image utilities
@@ -433,6 +470,22 @@ def draw_wrapped(draw, xy, text, font, fill, max_width, line_gap=7, max_lines=No
             line = line[:-1] + "…"
         draw.text((x, y), line, font=font, fill=fill)
         y += getattr(font, "size", 18) + line_gap
+    return y
+
+
+def draw_centered_wrapped(draw, box, text, font, fill, max_lines=None, line_gap=4):
+    """주어진 박스 안에서 텍스트를 가로 중앙 정렬로 출력."""
+    x1, y1, x2, y2 = box
+    max_width = x2 - x1
+    lines = wrap_text(draw, str(text or ""), font, max_width, max_lines=max_lines)
+    line_h = getattr(font, "size", 18) + line_gap
+    total_h = len(lines) * getattr(font, "size", 18) + max(0, len(lines)-1) * line_gap
+    y = y1 + max(0, (y2 - y1 - total_h)//2)
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        tw = bbox[2] - bbox[0]
+        draw.text((x1 + (max_width - tw)//2, y), line, font=font, fill=fill)
+        y += line_h
     return y
 
 def draw_section_title(draw, x, y, title, font, color):
@@ -628,8 +681,8 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     d.rounded_rectangle((sub_x, sub_y, sub_x+sub_w, sub_y+sub_h), radius=16, fill=(255,255,255), outline=uni_line, width=1)
     draw_fitted_wrapped(d, (sub_x+22, sub_y+11), data.get("subtitle", ""), 22, False, gray, sub_w-44, sub_h-18, line_gap=4, min_size=16, max_lines=1)
 
-    # 본문 공통 컨테이너 폭 확대: 헤더와 시각적 너비 균형 맞춤
-    X = 50
+    # 본문 공통 컨테이너: 헤더 길이와 시각적으로 맞추기 위해 좌우 여백 최소화
+    X = 28
     CW = W - X*2
 
     # Applications: 대학 로고 대표색 계열 accent 적용
@@ -650,7 +703,7 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
             icon = fit_image(app_imgs[i], (128, 96), bg=(255,255,255))
             im.paste(icon, (x + (col_w-128)//2, inner_y))
         app = apps[i] if i < len(apps) else {"name":"", "description":""}
-        draw_fitted_wrapped(d, (x+10, inner_y+112), app.get("name", ""), 20, True, black, col_w-20, 48, line_gap=4, min_size=14, max_lines=2)
+        draw_centered_wrapped(d, (x+10, inner_y+112, x+col_w-10, inner_y+160), app.get("name", ""), load_font(20, True), black, max_lines=2, line_gap=4)
 
     # Overview / Differentiation
     y = 552
@@ -700,14 +753,14 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     d.rectangle((table_x, table_y+38, table_x+table_w, table_y+table_h), fill=(255,255,255), outline=line)
     for xx in [table_x+col1, table_x+col1+col2]:
         d.line((xx, table_y, xx, table_y+table_h), fill=line, width=1)
-    d.text((table_x+18, table_y+8), "발명의 명칭", font=f_card, fill=black)
-    d.text((table_x+col1+18, table_y+3), "출원번호\n(등록번호)", font=load_font(15, False), fill=black, spacing=1)
-    d.text((table_x+col1+col2+18, table_y+3), "출원일자\n(등록일자)", font=load_font(15, False), fill=black, spacing=1)
-    draw_fitted_wrapped(d, (table_x+18, table_y+51), ip["title"] or data.get("original_title", ""), 14, False, black, col1-35, table_h-52, line_gap=3, min_size=10, max_lines=2)
+    draw_centered_wrapped(d, (table_x+8, table_y+4, table_x+col1-8, table_y+38), "발명의 명칭", f_card, black, max_lines=1)
+    draw_centered_wrapped(d, (table_x+col1+8, table_y+3, table_x+col1+col2-8, table_y+38), "출원번호\n(등록번호)", load_font(15, False), black, max_lines=2, line_gap=1)
+    draw_centered_wrapped(d, (table_x+col1+col2+8, table_y+3, table_x+table_w-8, table_y+38), "출원일자\n(등록일자)", load_font(15, False), black, max_lines=2, line_gap=1)
+    draw_centered_wrapped(d, (table_x+16, table_y+42, table_x+col1-16, table_y+table_h-4), ip["title"] or data.get("original_title", ""), load_font(14, False), black, max_lines=2, line_gap=3)
     num_text = f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number']
     date_text = f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date']
-    draw_fitted_wrapped(d, (table_x+col1+18, table_y+50), num_text, 18, False, black, col2-36, table_h-50, line_gap=3, min_size=12, max_lines=2)
-    draw_fitted_wrapped(d, (table_x+col1+col2+18, table_y+50), date_text, 18, False, black, col3-36, table_h-50, line_gap=3, min_size=12, max_lines=2)
+    draw_centered_wrapped(d, (table_x+col1+12, table_y+42, table_x+col1+col2-12, table_y+table_h-4), num_text, load_font(18, False), black, max_lines=2, line_gap=3)
+    draw_centered_wrapped(d, (table_x+col1+col2+12, table_y+42, table_x+table_w-12, table_y+table_h-4), date_text, load_font(18, False), black, max_lines=2, line_gap=3)
 
     # Contact
     y = 1480
@@ -795,7 +848,7 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     add_rect(slide, 190, 176, 825, 46, fill=(255,255,255), outline=uni_line, radius=True)
     add_textbox(slide, 212, 187, 780, 26, data.get("subtitle", ""), 12, False, gray)
 
-    X=50; CW=1140
+    X=28; CW=1184
     app_y=292; app_h=232
     add_rect(slide, X, app_y, CW, app_h, fill=(255,255,255), outline=line, radius=True)
     add_textbox(slide, X+28, app_y+22, 300, 40, "적용분야 / 제품", 15, True, primary)
@@ -806,7 +859,7 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
         x=X+28+i*(col_w+col_gap)
         if i < len(app_imgs):
             slide.shapes.add_picture(img_bytes(fit_image(app_imgs[i], (128,96))), px(x+(col_w-128)//2), px(inner_y), width=px(128), height=px(96))
-        add_textbox(slide, x+10, inner_y+112, col_w-20, 48, app.get("name", ""), 11, True, black)
+        add_textbox(slide, x+10, inner_y+112, col_w-20, 48, app.get("name", ""), 11, True, black, align=PP_ALIGN.CENTER)
 
     left_x=X; right_x=X+CW//2+15; box_w=CW//2-15
     y=552; box_h=292
@@ -833,12 +886,12 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     add_textbox(slide, X+28, y+20, 300, 35, "지식재산권 현황", 15, True, primary)
     add_rect(slide, X+28, y+66, CW-56, 96, fill=(255,255,255), outline=line)
     add_rect(slide, X+28, y+66, CW-56, 38, fill=table_header, outline=line)
-    add_textbox(slide, X+46, y+74, 400, 30, "발명의 명칭", 11, True, black)
-    add_textbox(slide, X+485, y+70, 250, 36, "출원번호\n(등록번호)", 9, True, black)
-    add_textbox(slide, X+790, y+70, 250, 36, "출원일자\n(등록일자)", 9, True, black)
-    add_textbox(slide, X+46, y+116, 420, 48, ip["title"] or data.get("original_title",""), 8, False, black)
-    add_textbox(slide, X+485, y+116, 250, 48, f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number'], 10, False, black)
-    add_textbox(slide, X+790, y+116, 250, 48, f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date'], 10, False, black)
+    add_textbox(slide, X+46, y+74, 400, 30, "발명의 명칭", 11, True, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, X+485, y+70, 250, 36, "출원번호\n(등록번호)", 9, True, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, X+790, y+70, 250, 36, "출원일자\n(등록일자)", 9, True, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, X+46, y+116, 420, 48, ip["title"] or data.get("original_title",""), 8, False, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, X+485, y+116, 250, 48, f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number'], 10, False, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, X+790, y+116, 250, 48, f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date'], 10, False, black, align=PP_ALIGN.CENTER)
 
     y=1480
     add_rect(slide, X, y, CW, 78, fill=(255,255,255), outline=line, radius=True)
@@ -904,13 +957,18 @@ if generate_btn:
 
     app_imgs=[]
     if make_images:
-        with st.spinner("적용분야 이미지 생성 중..."):
-            for app in data.get("applications", [])[:3]:
-                try:
-                    app_imgs.append(generate_application_image(app.get("name",""), app.get("description","")))
-                except Exception as e:
-                    st.warning(f"적용분야 이미지 생성 실패: {e}")
-                    app_imgs.append(Image.new("RGB", (1024,1024), "white"))
+        with st.spinner("적용분야 이미지 세트 생성 중..."):
+            try:
+                app_imgs = generate_application_images_set(data.get("applications", [])[:3])
+            except Exception as e:
+                st.warning(f"적용분야 이미지 세트 생성 실패: {e}")
+                # 세트 생성 실패 시 개별 생성으로 fallback
+                for app in data.get("applications", [])[:3]:
+                    try:
+                        app_imgs.append(generate_application_image(app.get("name",""), app.get("description","")))
+                    except Exception as e2:
+                        st.warning(f"적용분야 이미지 생성 실패: {e2}")
+                        app_imgs.append(Image.new("RGB", (1024,1024), "white"))
     else:
         app_imgs=[Image.new("RGB", (1024,1024), "white") for _ in data.get("applications", [])[:3]]
     st.session_state.app_imgs = app_imgs
