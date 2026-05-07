@@ -1008,7 +1008,10 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     header_h = 246
     d.rectangle((0, 0, W, header_h), fill=uni_pale)
 
+    # Header logo alignment guard
+    # 좌측 대학 로고와 우측 PIUM/PIUMLINK 스택이 헤더 안에서 같은 상단 기준선과 같은 높이감을 갖도록 고정
     LOGO_BOX = 145
+    LOGO_Y = 22
     left_logo_box = make_university_logo_box(
         university_logo,
         data.get('university',''),
@@ -1016,21 +1019,20 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
         bg=uni_pale,
         primary=uni_primary,
     )
-    im.paste(left_logo_box, (0, 0))
+    im.paste(left_logo_box, (0, LOGO_Y))
 
-    # Header right assets: 좌측 대학 로고 박스와 시각축이 맞도록 우측 로고 스택 정렬
-    # - PIUM 로고: 우측 상단
-    # - PIUMLINK: PIUM 로고 아래, 별도 박스 없이 크게 배치
     right_margin = 38
     right_w = 165
     right_x = W - right_margin - right_w
-    pium_canvas = make_transparent_logo_canvas(pium_logo, size=(150, 70), padding=2)
-    im.paste(pium_canvas, (right_x + (right_w-150)//2, 36), pium_canvas)
+    STACK_Y = LOGO_Y
+    PIUM_W, PIUM_H = 145, 54
+    LINK_W, LINK_H = 86, 86
+    pium_canvas = make_transparent_logo_canvas(pium_logo, size=(PIUM_W, PIUM_H), padding=0)
+    im.paste(pium_canvas, (right_x + (right_w-PIUM_W)//2, STACK_Y), pium_canvas)
 
     if piumlink_logo is not None:
-        link_w, link_h = 108, 108
-        link = make_transparent_logo_canvas(piumlink_logo, size=(link_w, link_h), padding=0)
-        im.paste(link, (right_x + (right_w-link_w)//2, 112), link)
+        link = make_transparent_logo_canvas(piumlink_logo, size=(LINK_W, LINK_H), padding=0)
+        im.paste(link, (right_x + (right_w-LINK_W)//2, STACK_Y + PIUM_H + 5), link)
 
     header_x = 190
     header_w = right_x - header_x - 30
@@ -1104,15 +1106,16 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     draw_bullets_fit(d, right_x+52, sub_y2+46, data.get("technical_advantages", [])[:2], 15, False, primary, box_w-105, sub_h2-52, bullet="▸", line_gap=4, item_gap=4, min_size=11, max_lines_per_item=2)
 
     # IP
-    y = 1258
+    # QR 스캔성을 위해 표 높이/바로가기 열을 넓게 확보
+    y = 1246
     ip = normalize_ip(data.get("ip", {}))
-    ip_h = 220
+    ip_h = 258
     draw_card(d, (X, y, X+CW, y+ip_h), radius=22, fill=sky2, outline=line, width=2)
     draw_section_title(d, X+28, y+20, "지식재산권 현황", f_sec, primary)
     table_x, table_y = X+28, y+66
-    table_w, table_h = CW-56, 150
+    table_w, table_h = CW-56, 178
     # QR 스캔성을 위해 바로가기 열을 넓게 확보하고, QR이 표 선/헤더와 겹치지 않도록 표 높이 조정
-    col4 = 154
+    col4 = 195
     col1 = int((table_w-col4)*0.42)
     col2 = int((table_w-col4)*0.29)
     col3 = table_w - col4 - col1 - col2
@@ -1134,14 +1137,15 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     draw_centered_wrapped(d, (c1+10, table_y+header_row_h+8, c2-10, table_y+table_h-8), num_text, load_font(16, False), black, max_lines=2, line_gap=3)
     draw_centered_wrapped(d, (c2+10, table_y+header_row_h+8, c3-10, table_y+table_h-8), date_text, load_font(16, False), black, max_lines=2, line_gap=3)
     if qr_img is not None:
-        qr_size = 104
-        qr = fit_image(qr_img, (qr_size, qr_size), bg=(255,255,255), trim=True)
+        qr_size = 132
+        # QR은 잘못 잘리면 인식률이 떨어지므로 trim을 끄고 정사각 영역 중앙에 크게 배치
+        qr = fit_image(qr_img, (qr_size, qr_size), bg=(255,255,255), trim=False)
         qr_x = c3 + (col4 - qr_size)//2
-        qr_y = table_y + header_row_h + (table_h - header_row_h - qr_size)//2
+        qr_y = table_y + header_row_h + max(0, (table_h - header_row_h - qr_size)//2)
         im.paste(qr, (qr_x, qr_y))
 
     # Contact
-    y = 1510
+    y = 1532
     contact_h = 76
     d.rounded_rectangle((X, y, X+CW, y+contact_h), radius=20, fill=(255,255,255), outline=line, width=2)
     d.text((X+28, y+23), "문의처", font=f_sec, fill=primary)
@@ -1217,16 +1221,20 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
 
     # Header
     add_rect(slide, 0, 0, 1240, 246, fill=uni_pale, outline=uni_pale)
+    LOGO_Y = 22
     left_logo_box = make_university_logo_box(university_logo, data.get('university',''), size=(145,145), bg=uni_pale, primary=uni_primary)
-    slide.shapes.add_picture(img_bytes(left_logo_box), px(0), px(0), width=px(145), height=px(145))
+    slide.shapes.add_picture(img_bytes(left_logo_box), px(0), px(LOGO_Y), width=px(145), height=px(145))
     right_margin = 38
     right_w = 165
     right_x = 1240 - right_margin - right_w
-    pium_canvas = make_transparent_logo_canvas(pium_logo, size=(150,70), padding=2)
-    slide.shapes.add_picture(img_bytes(pium_canvas), px(right_x + (right_w-150)//2), px(36), width=px(150), height=px(70))
+    STACK_Y = LOGO_Y
+    PIUM_W, PIUM_H = 145, 54
+    LINK_W, LINK_H = 86, 86
+    pium_canvas = make_transparent_logo_canvas(pium_logo, size=(PIUM_W, PIUM_H), padding=0)
+    slide.shapes.add_picture(img_bytes(pium_canvas), px(right_x + (right_w-PIUM_W)//2), px(STACK_Y), width=px(PIUM_W), height=px(PIUM_H))
     if piumlink_logo is not None:
-        link = make_transparent_logo_canvas(piumlink_logo, size=(108,108), padding=0)
-        slide.shapes.add_picture(img_bytes(link), px(right_x + (right_w-108)//2), px(112), width=px(108), height=px(108))
+        link = make_transparent_logo_canvas(piumlink_logo, size=(LINK_W,LINK_H), padding=0)
+        slide.shapes.add_picture(img_bytes(link), px(right_x + (right_w-LINK_W)//2), px(STACK_Y + PIUM_H + 5), width=px(LINK_W), height=px(LINK_H))
     header_w = right_x - 190 - 30
     add_textbox(slide, 190, 45, header_w, 32, f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} 교수", 13, False, uni_primary)
     add_textbox(slide, 190, 82, header_w, 82, data.get("marketing_title", ""), 24, True, uni_primary)
