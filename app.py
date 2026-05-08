@@ -23,7 +23,7 @@ IMAGE_MODEL_FIXED = "gpt-image-1"
 
 UNIVERSITIES = [
     "부산대학교", "국립부경대학교", "국립한국해양대학교", "동아대학교", "동의대학교", "동서대학교",
-    "동명대학교", "신라대학교", "울산대학교", "경남대학교", "경상대학교", "창원대학교", "인제대학교", "수기입력"
+    "동명대학교", "신라대학교", "울산대학교", "경남대학교", "경상국립대학교", "국립창원대학교", "인제대학교", "수기입력"
 ]
 
 st.set_page_config(page_title="PIUM Tech Brief 생성기", page_icon="📄", layout="wide")
@@ -613,7 +613,7 @@ def safe_json_parse(text: str) -> Dict[str, Any]:
 def analyze_patent_with_gpt(patent_text: str, university: str, department: str, professor: str) -> Dict[str, Any]:
     client = get_client()
     prompt = f"""
-너는 대학 기술마케팅자료(SMK/Tech Brief) 작성 전문가다.
+너는 대학 기술마케팅자료(SMK) 작성 전문가다.
 아래 특허 명세서를 바탕으로 카드형 1페이지 기술소개자료에 들어갈 내용을 생성하라.
 
 작성 기준:
@@ -1357,8 +1357,8 @@ def build_data_from_edit_form(base: Dict[str, Any], university: str, department:
 # -----------------------------------------------------
 # Streamlit UI
 # -----------------------------------------------------
-st.title("PIUM Tech Brief 생성기")
-st.caption("특허 명세서 PDF를 업로드하면 카드형 1페이지 Tech Brief, PDF, PPTX를 생성합니다.")
+st.title("PIUM SMK 생성기")
+st.caption("특허 명세서 PDF를 업로드하면 카드형 1페이지 SMK를 생성합니다.")
 
 with st.sidebar:
     st.header("입력 정보")
@@ -1368,21 +1368,21 @@ with st.sidebar:
     if selected_univ == "수기입력":
         custom_univ = st.text_input("대학교 수기입력", placeholder="예: ○○대학교")
     university = custom_univ.strip() if selected_univ == "수기입력" else selected_univ
-    department = st.text_input("학과/소속", placeholder="예: 컴퓨터공학과")
+    department = st.text_input("학과/소속", placeholder="예: 활빈당공학과")
     professor = st.text_input("교수명", placeholder="예: 홍길동")
 
     st.divider()
     st.subheader("문의처")
     org = st.text_input("소속", placeholder="예: 부산대학교 산학협력단")
-    name = st.text_input("이름", placeholder="예: 윤재철")
-    position = st.text_input("직책", placeholder="예: 차장")
+    name = st.text_input("이름", placeholder="예: 고길동")
+    position = st.text_input("직책", placeholder="예: 부장")
     phone = st.text_input("연락처", placeholder="예: 051.510.2741")
     email = st.text_input("이메일", placeholder="예: example@pusan.ac.kr")
 
     st.divider()
     make_images = st.checkbox("적용분야 이미지 생성", value=True, help="끄면 이미지 생성 비용이 발생하지 않습니다.")
     use_logos = st.checkbox("상단 로고 자동 삽입", value=True, help="logo.zip 안의 대학 로고와 PIUM 로고를 사용합니다.")
-    generate_btn = st.button("Tech Brief 생성", type="primary", use_container_width=True)
+    generate_btn = st.button("SMK 생성", type="primary", use_container_width=True)
 
 for key, default in {
     "data": None, "brief_image": None, "pdf_bytes": None, "pptx_bytes": None,
@@ -1406,7 +1406,7 @@ if generate_btn:
         st.session_state.rep_img = rep_img
         st.session_state.qr_img = qr_img
 
-    with st.spinner("GPT로 Tech Brief 텍스트 생성 중..."):
+    with st.spinner("GPT로 SMK 텍스트 생성 중..."):
         data = analyze_patent_with_gpt(patent_text, university, department, professor)
         data["university"] = university; data["department"] = department; data["professor"] = professor
         st.session_state.data = data
@@ -1441,17 +1441,17 @@ if generate_btn:
         st.session_state.pptx_bytes = make_pptx_bytes(data, rep_img, app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img, piumlink_logo)
 
 if st.session_state.data is None:
-    st.info("왼쪽에서 정보를 입력하고 특허 PDF를 업로드한 뒤 'Tech Brief 생성'을 누르세요.")
+    st.info("왼쪽에서 정보를 입력하고 특허 PDF를 업로드한 뒤 'SMK 생성'을 누르세요.")
 else:
     col1, col2 = st.columns([1.15, 0.85], gap="large")
     with col1:
-        st.subheader("Tech Brief 미리보기")
+        st.subheader("SMK 미리보기")
         st.image(st.session_state.brief_image, use_container_width=True)
         c1, c2 = st.columns(2)
         with c1:
-            st.download_button("PDF 다운로드", st.session_state.pdf_bytes, "PIUM_Tech_Brief.pdf", "application/pdf", type="primary", use_container_width=True)
+            st.download_button("PDF 다운로드", st.session_state.pdf_bytes, "PIUM_SMK.pdf", "application/pdf", type="primary", use_container_width=True)
         with c2:
-            st.download_button("PPTX 다운로드(수정용)", st.session_state.pptx_bytes, "PIUM_Tech_Brief.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", use_container_width=True)
+            st.download_button("PPTX 다운로드(수정용)", st.session_state.pptx_bytes, "PIUM_SMK.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", use_container_width=True)
 
     with col2:
         st.subheader("생성 텍스트 수정")
