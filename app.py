@@ -26,7 +26,7 @@ UNIVERSITIES = [
     "동명대학교", "신라대학교", "울산대학교", "경남대학교", "경상국립대학교", "국립창원대학교", "인제대학교", "수기입력"
 ]
 
-st.set_page_config(page_title="PIUM Tech Brief 생성기", page_icon="📄", layout="wide")
+st.set_page_config(page_title="PIUM SMK 생성기", page_icon="📄", layout="wide")
 
 # -----------------------------------------------------
 # Client / Font
