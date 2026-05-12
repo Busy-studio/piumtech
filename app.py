@@ -1502,20 +1502,23 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
 
     # Applications + Market
     app_y, app_h = 294, 262
-    _draw_shadowed_card(d, (X, app_y, X+CW, app_y+app_h), radius=34, fill=(255,255,255), outline=card_line, width=2, shadow=True)
-    left_w = 618
-    market_x = X + left_w + 10
-    market_w = CW - left_w - 18
+    top_gap = 30
+    app_card_w = 552
+    market_x = X + app_card_w + top_gap
+    market_w = CW - app_card_w - top_gap
+
+    # 참고용 레이아웃처럼 적용분야와 시장현황을 완전히 독립된 카드로 분리
+    _draw_shadowed_card(d, (X, app_y, X+app_card_w, app_y+app_h), radius=34, fill=(255,255,255), outline=card_line, width=2, shadow=True)
+    _draw_shadowed_card(d, (market_x, app_y, market_x+market_w, app_y+app_h), radius=34, fill=(255,255,255), outline=card_line, width=2, shadow=True)
     draw_section_title(d, X+32, app_y+28, "적용분야 / 제품", sec_font, primary)
-    draw_section_title(d, market_x+16, app_y+28, "시장현황", sec_font, primary)
-    d.line((market_x-2, app_y+22, market_x-2, app_y+app_h-22), fill=mix(card_line, (255,255,255), 0.18), width=2)
+    draw_section_title(d, market_x+34, app_y+28, "시장현황", sec_font, primary)
 
     apps = data.get("applications", [])[:3]
     app_inner_x = X + 22
-    app_inner_w = left_w - 34
-    col_gap = 6
+    app_inner_w = app_card_w - 44
+    col_gap = 4
     col_w = (app_inner_w - col_gap*2) // 3
-    icon_size = (108, 84)
+    icon_size = (112, 88)
     icon_y = app_y + 82
     for i in range(3):
         col_x = app_inner_x + i*(col_w + col_gap)
@@ -1526,30 +1529,30 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
             icon = fit_image(app_imgs[i], icon_size, bg=(255,255,255), trim=True)
             im.paste(icon, (col_x + (col_w-icon_size[0])//2, icon_y))
         app = apps[i] if i < len(apps) else {"name":""}
-        draw_centered_wrapped(d, (col_x+6, app_y+174, col_x+col_w-6, app_y+228), app.get("name", ""), load_font(19, True), black, max_lines=2, line_gap=3)
+        draw_centered_wrapped(d, (col_x+6, app_y+176, col_x+col_w-6, app_y+228), app.get("name", ""), load_font(19, True), black, max_lines=2, line_gap=3)
 
     market_info = normalize_market_info(data.get("market_info", {}))
     market_title = market_info.get("display_title") or market_info.get("market_name") or "글로벌 시장현황"
-    draw_fitted_wrapped(d, (market_x+18, app_y+74), market_title, 19, True, black, market_w-36, 30, line_gap=2, min_size=14, max_lines=1)
+    draw_fitted_wrapped(d, (market_x+34, app_y+74), market_title, 19, True, black, market_w-68, 30, line_gap=2, min_size=14, max_lines=1)
 
-    # 시장현황: 왼쪽 그래프 + 오른쪽 설명 카드 + 하단 출처
+    # 시장현황 카드 내부: 왼쪽 그래프 + 오른쪽 설명 카드 + 하단 출처
     chart, _market_visual_mode = get_market_visual(market_info, primary=primary, accent=accent)
-    graph_x, graph_y = market_x+18, app_y+106
-    graph_w, graph_h = 174, 98
+    graph_x, graph_y = market_x+34, app_y+104
+    graph_w, graph_h = 178, 104
     _draw_shadowed_card(d, (graph_x, graph_y, graph_x+graph_w, graph_y+graph_h), radius=12, fill=(255,255,255), outline=card_line, width=1, shadow=False)
     chart_img = fit_image(chart, (graph_w-10, graph_h-10), bg=(255,255,255), trim=False)
     im.paste(chart_img, (graph_x+5, graph_y+5))
 
     desc_x = graph_x + graph_w + 16
-    desc_y = app_y + 118
-    desc_w = market_x + market_w - 18 - desc_x
-    desc_h = 74
+    desc_y = app_y + 114
+    desc_w = market_x + market_w - 28 - desc_x
+    desc_h = 78
     _draw_shadowed_card(d, (desc_x, desc_y, desc_x+desc_w, desc_y+desc_h), radius=16, fill=(255,255,255), outline=card_line, width=1, shadow=True)
     desc = market_description_text(market_info)
     draw_fitted_wrapped(d, (desc_x+14, desc_y+12), desc, 13, False, gray, desc_w-28, desc_h-18, line_gap=3, min_size=10, max_lines=4)
 
     source = market_source_text(market_info)
-    draw_fitted_wrapped(d, (graph_x, app_y+216), source, 11, False, gray, market_w-36, 18, line_gap=2, min_size=8, max_lines=1)
+    draw_fitted_wrapped(d, (graph_x, app_y+218), source, 11, False, gray, market_w-64, 18, line_gap=2, min_size=8, max_lines=1)
 
     # Overview / Differentiation
     y = 582
@@ -1722,43 +1725,47 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
 
     # Applications + Market
     app_y, app_h = 294, 262
-    add_rect(slide, X, app_y, CW, app_h, fill=(255,255,255), outline=line, radius=True)
-    left_w = 618
-    market_x = X + left_w + 10
-    market_w = CW - left_w - 18
+    top_gap = 30
+    app_card_w = 552
+    market_x = X + app_card_w + top_gap
+    market_w = CW - app_card_w - top_gap
+
+    add_rect(slide, X, app_y, app_card_w, app_h, fill=(255,255,255), outline=line, radius=True)
+    add_rect(slide, market_x, app_y, market_w, app_h, fill=(255,255,255), outline=line, radius=True)
     add_textbox(slide, X+34, app_y+30, 240, 36, "적용분야 / 제품", 15.5, True, primary)
-    add_textbox(slide, market_x+18, app_y+30, 160, 36, "시장현황", 15.5, True, primary)
+    add_textbox(slide, market_x+34, app_y+30, 160, 36, "시장현황", 15.5, True, primary)
+
     apps = data.get("applications", [])[:3]
     app_inner_x = X + 22
-    app_inner_w = left_w - 34
-    col_gap = 6
+    app_inner_w = app_card_w - 44
+    col_gap = 4
     col_w = (app_inner_w - col_gap*2) // 3
     for i in range(3):
         col_x = app_inner_x + i*(col_w + col_gap)
         if i < len(app_imgs):
-            icon_w, icon_h = 108, 84
+            icon_w, icon_h = 112, 88
             slide.shapes.add_picture(img_bytes(fit_image(app_imgs[i], (icon_w, icon_h), trim=True)), px(col_x+(col_w-icon_w)//2), px(app_y+82), width=px(icon_w), height=px(icon_h))
         name = apps[i].get("name", "") if i < len(apps) else ""
-        add_textbox(slide, col_x+6, app_y+174, col_w-12, 48, name, 11.5, True, black, align=PP_ALIGN.CENTER)
+        add_textbox(slide, col_x+6, app_y+176, col_w-12, 48, name, 11.5, True, black, align=PP_ALIGN.CENTER)
 
     market_info = normalize_market_info(data.get("market_info", {}))
     market_title = market_info.get("display_title") or market_info.get("market_name") or "글로벌 시장현황"
-    add_textbox(slide, market_x+18, app_y+74, market_w-36, 28, market_title, 11.2, True, black)
+    add_textbox(slide, market_x+34, app_y+74, market_w-68, 28, market_title, 11.2, True, black)
 
-    graph_x, graph_y = market_x+18, app_y+106
-    graph_w, graph_h = 174, 98
+    graph_x, graph_y = market_x+34, app_y+104
+    graph_w, graph_h = 178, 104
     add_rect(slide, graph_x, graph_y, graph_w, graph_h, fill=(255,255,255), outline=line, radius=True)
     chart, _market_visual_mode = get_market_visual(market_info, primary=primary, accent=accent)
     slide.shapes.add_picture(img_bytes(fit_image(chart, (graph_w-10, graph_h-10), trim=False)), px(graph_x+5), px(graph_y+5), width=px(graph_w-10), height=px(graph_h-10))
 
     desc_x = graph_x + graph_w + 16
-    desc_y = app_y + 118
-    desc_w = market_x + market_w - 18 - desc_x
-    desc_h = 74
+    desc_y = app_y + 114
+    desc_w = market_x + market_w - 28 - desc_x
+    desc_h = 78
     add_rect(slide, desc_x, desc_y, desc_w, desc_h, fill=(255,255,255), outline=line, radius=True)
     add_textbox(slide, desc_x+12, desc_y+10, desc_w-24, desc_h-16, market_description_text(market_info), 7.9, False, gray)
 
-    add_textbox(slide, graph_x, app_y+216, market_w-36, 16, market_source_text(market_info), 6.6, False, gray)
+    add_textbox(slide, graph_x, app_y+218, market_w-64, 16, market_source_text(market_info), 6.6, False, gray)
 
     # Overview / Difference
     y=582; gap=30; box_w=(CW-gap)//2; box_h=290
