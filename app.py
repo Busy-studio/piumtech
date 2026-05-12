@@ -1112,14 +1112,12 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     d.text((inner_x+20, sub2_y+15), "기술적 우위", font=load_font(18, True), fill=secondary)
     draw_bullets_fit(d, inner_x+22, sub2_y+47, data.get("technical_advantages", [])[:2], 13, False, primary, inner_w-44, sub2_h-52, bullet="▸", line_gap=3, item_gap=2, min_size=10, max_lines_per_item=2)
 
-    # ---------------- IP + Shortcut QR ----------------
+    # ---------------- IP Status ----------------
     y = 1264
     ip = normalize_ip(data.get("ip", {}))
     ip_h = 220
-    qr_card_w = 232
-    ip_w = CW - qr_card_w - 22
+    ip_w = CW
     _draw_shadowed_card(d, (X, y, X+ip_w, y+ip_h), radius=28, fill=sky2, outline=card_line, width=2, shadow=True)
-    _draw_shadowed_card(d, (X+ip_w+22, y, X+CW, y+ip_h), radius=28, fill=(255,255,255), outline=card_line, width=2, shadow=True)
     draw_section_title(d, X+36, y+30, "지식재산권 현황", sec_font, primary)
 
     table_x, table_y = X+28, y+72
@@ -1143,15 +1141,6 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     draw_centered_wrapped(d, (c1+10, table_y+header_h2+8, c2-10, table_y+table_h-8), num_text, load_font(15, False), black, max_lines=2, line_gap=3)
     draw_centered_wrapped(d, (c2+10, table_y+header_h2+8, table_x+table_w-10, table_y+table_h-8), date_text, load_font(15, False), black, max_lines=2, line_gap=3)
 
-    # QR 바로가기 별도 카드
-    qr_x = X + ip_w + 22
-    qr_w = qr_card_w
-    draw_centered_wrapped(d, (qr_x+15, y+30, qr_x+qr_w-15, y+62), "바로가기", load_font(25, True), black, max_lines=1)
-    if qr_img is not None:
-        qr_size = 142
-        qr = fit_image(qr_img, (qr_size, qr_size), bg=(255,255,255), trim=False)
-        im.paste(qr, (qr_x + (qr_w-qr_size)//2, y+72))
-
     # ---------------- Contact ----------------
     y = 1518
     contact_h = 78
@@ -1160,6 +1149,30 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     draw_fitted_wrapped(d, (X+160, y+29), contact, 18, False, black, CW-190, 28, line_gap=3, min_size=12, max_lines=1)
 
     return im
+
+def sanitize_filename_part(value: Any, fallback: str = "미입력") -> str:
+    """Windows/macOS에서 안전하게 쓸 수 있도록 파일명 구성 요소를 정리한다."""
+    text = str(value or "").strip()
+    if not text:
+        text = fallback
+    text = re.sub(r"[\\/:*?\"<>|\r\n\t]+", "_", text)
+    text = re.sub(r"\s+", " ", text).strip(" ._")
+    return text or fallback
+
+
+def make_smk_filename_base(data: Dict[str, Any]) -> str:
+    """대학명_SMK_발명의명칭_연구자명_소속_출원번호 형식의 파일명 base를 만든다."""
+    ip = normalize_ip(data.get("ip", {}))
+    parts = [
+        data.get("university", ""),
+        "SMK",
+        ip.get("title") or data.get("original_title") or data.get("marketing_title", ""),
+        data.get("professor", ""),
+        data.get("department", ""),
+        ip.get("application_number", ""),
+    ]
+    return "_".join(sanitize_filename_part(v) for v in parts)
+
 
 # -----------------------------------------------------
 # PDF / PPTX
@@ -1287,10 +1300,9 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     add_textbox(slide, inner_x+20, y+215, 220, 24, "기술적 우위", 10, True, secondary)
     add_textbox(slide, inner_x+22, y+247, inner_w-44, 56, "\n".join(["▸ "+str(v) for v in data.get("technical_advantages",[])[:2]]), 7.2, False, primary)
 
-    # IP + QR separate card
-    y=1264; ip=normalize_ip(data.get("ip",{})); ip_h=220; qr_card_w=232; ip_w=CW-qr_card_w-22
+    # IP Status
+    y=1264; ip=normalize_ip(data.get("ip",{})); ip_h=220; ip_w=CW
     add_rect(slide, X, y, ip_w, ip_h, fill=sky2, outline=line, radius=True)
-    add_rect(slide, X+ip_w+22, y, qr_card_w, ip_h, fill=(255,255,255), outline=line, radius=True)
     add_textbox(slide, X+36, y+30, 260, 34, "지식재산권 현황", 14, True, primary)
     table_x, table_y, table_w, table_h = X+28, y+72, ip_w-56, 132
     add_rect(slide, table_x, table_y, table_w, table_h, fill=(255,255,255), outline=line)
@@ -1305,11 +1317,6 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     add_textbox(slide, table_x+12, table_y+50, col1-24, 54, ip["title"] or data.get("original_title",""), 6.8, False, black, align=PP_ALIGN.CENTER)
     add_textbox(slide, table_x+col1+8, table_y+50, col2-16, 54, f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number'], 8.6, False, black, align=PP_ALIGN.CENTER)
     add_textbox(slide, table_x+col1+col2+8, table_y+50, col3-16, 54, f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date'], 8.6, False, black, align=PP_ALIGN.CENTER)
-    add_textbox(slide, X+ip_w+22, y+30, qr_card_w, 34, "바로가기", 15, True, black, align=PP_ALIGN.CENTER)
-    if qr_img is not None:
-        qr_size=142
-        qr_box=fit_image(qr_img, (qr_size, qr_size), bg=(255,255,255), trim=False)
-        slide.shapes.add_picture(img_bytes(qr_box), px(X+ip_w+22+(qr_card_w-qr_size)//2), px(y+72), width=px(qr_size), height=px(qr_size))
 
     # Contact
     y=1518
@@ -1449,9 +1456,11 @@ else:
         st.image(st.session_state.brief_image, use_container_width=True)
         c1, c2 = st.columns(2)
         with c1:
-            st.download_button("PDF 다운로드", st.session_state.pdf_bytes, "PIUM_SMK.pdf", "application/pdf", type="primary", use_container_width=True)
+            filename_base = make_smk_filename_base(st.session_state.data or {})
+            st.download_button("PDF 다운로드", st.session_state.pdf_bytes, f"{filename_base}.pdf", "application/pdf", type="primary", use_container_width=True)
         with c2:
-            st.download_button("PPTX 다운로드(수정용)", st.session_state.pptx_bytes, "PIUM_SMK.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", use_container_width=True)
+            filename_base = make_smk_filename_base(st.session_state.data or {})
+            st.download_button("PPTX 다운로드(수정용)", st.session_state.pptx_bytes, f"{filename_base}.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", use_container_width=True)
 
     with col2:
         st.subheader("생성 텍스트 수정")
