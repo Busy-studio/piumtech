@@ -962,6 +962,154 @@ def is_valid_market_info(info: Dict[str, Any]) -> bool:
     has_years = bool(str(m.get("base_year") or "").strip() and str(m.get("end_year") or "").strip())
     return has_source and has_years and (has_cagr or has_values)
 
+
+def select_market_candidates(data: Dict[str, Any]) -> List[Dict[str, str]]:
+    """적용분야를 대표할 수 있는 상위 글로벌 시장 후보 2~3개를 뽑는다."""
+    client = get_client()
+    apps = data.get("applications", [])[:3]
+    app_lines = []
+    for i, app in enumerate(apps, 1):
+        app_lines.append(f"{i}. {app.get('name','')} - {app.get('description','')}")
+    app_text = "\n".join(app_lines) or "적용분야 정보 없음"
+    prompt = f"""
+너는 대학 기술소개자료(SMK)의 시장현황 구성을 돕는 시장 분류 전문가다.
+중요: 기술명 자체를 시장명으로 사용하지 마라.
+아래 기술의 적용분야를 보고, 대표성이 있는 상위 글로벌 시장 후보를 2~3개 뽑아라.
+
+규칙:
+- 기술명 그대로를 시장명으로 쓰지 않는다.
+- 반드시 실제 시장조사 리포트에서 흔히 쓰이는 넓은 시장명으로 정한다.
+- 각 후보는 서로 다른 관점의 상위 시장이어야 한다.
+- 시장명은 너무 좁은 특허명/솔루션명이 아니라 상위 카테고리여야 한다.
+- 예시: Global Remote Sensing Market, Global Geospatial Analytics Market, Global Precision Agriculture Market, Global GIS Market, Global Environmental Monitoring Market
+- 출력은 JSON만 반환한다.
+
+JSON 형식:
+{{
+  "candidates": [
+    {{"market_name_ko": "", "market_name_en": "", "display_title": "", "search_keywords": ""}},
+    {{"market_name_ko": "", "market_name_en": "", "display_title": "", "search_keywords": ""}},
+    {{"market_name_ko": "", "market_name_en": "", "display_title": "", "search_keywords": ""}}
+  ]
+}}
+
+기술명: {data.get('marketing_title','')}
+기술 한줄요약: {data.get('subtitle','')}
+적용분야:
+{app_text}
+"""
+    try:
+        res = client.responses.create(model=TEXT_MODEL_FIXED, input=prompt, temperature=0.1)
+        parsed = safe_json_parse(res.output_text)
+        raw_candidates = parsed.get("candidates") or []
+        candidates: List[Dict[str, str]] = []
+        for item in raw_candidates[:3]:
+            if not isinstance(item, dict):
+                continue
+            ko = str(item.get("market_name_ko") or "").strip()
+            en = str(item.get("market_name_en") or "").strip()
+            display = str(item.get("display_title") or "").strip()
+            keywords = str(item.get("search_keywords") or "").strip()
+            if not (ko or en or display or keywords):
+                continue
+            if not display:
+                base = ko or en or "대표 글로벌 시장"
+                display = f"글로벌 {base} 시장"
+            candidates.append({
+                "market_name_ko": ko,
+                "market_name_en": en,
+                "display_title": display,
+                "search_keywords": keywords or (en or ko),
+            })
+        if candidates:
+            return candidates
+    except Exception:
+        pass
+
+    fallback_name = apps[0].get("name", "대표 적용시장") if apps else "대표 적용시장"
+    return [{
+        "market_name_ko": fallback_name,
+        "market_name_en": fallback_name,
+        "display_title": f"글로벌 {fallback_name} 시장",
+        "search_keywords": fallback_name,
+    }]
+
+
+def choose_best_market_candidate(data: Dict[str, Any], candidates: List[Dict[str, str]]) -> Dict[str, str]:
+    """후보 2~3개 중 공개 글로벌 시장 데이터가 가장 잘 잡히는 후보를 자동 선택한다."""
+    if not candidates:
+        return {
+            "market_name_ko": "대표 적용시장",
+            "market_name_en": "Representative Market",
+            "display_title": "글로벌 대표 적용시장",
+            "search_keywords": "Representative Market",
+        }
+    if len(candidates) == 1:
+        return candidates[0]
+
+    client = get_client()
+    apps = data.get("applications", [])[:3]
+    app_lines = []
+    for i, app in enumerate(apps, 1):
+        app_lines.append(f"{i}. {app.get('name','')} - {app.get('description','')}")
+    app_text = "\n".join(app_lines) or "적용분야 정보 없음"
+    cand_text_lines = []
+    for idx, c in enumerate(candidates, 1):
+        cand_text_lines.append(
+            f"{idx}. 한글명: {c.get('market_name_ko','')} | 영문명: {c.get('market_name_en','')} | 표시제목: {c.get('display_title','')} | 검색키워드: {c.get('search_keywords','')}"
+        )
+    cand_text = "\n".join(cand_text_lines)
+    prompt = f"""
+너는 시장 리서치 전문가다.
+아래 후보 2~3개 중에서, 공개 웹 검색으로 글로벌 시장 CAGR/시장규모/전망/그래프를 가장 찾기 쉬운 후보 1개를 고르라.
+
+선정 기준:
+- Global/Worldwide 시장 데이터가 실제로 많이 공개되어 있을 것
+- CAGR 또는 시장규모가 비교적 쉽게 확인될 것
+- 시장조사 리포트/공개 페이지/그래프 이미지를 확보하기 쉬울 것
+- 기술 적용분야와도 충분히 연관성이 있을 것
+- 기술명 자체와 비슷한 좁은 시장 대신 상위 시장을 선호할 것
+
+출력은 JSON만 반환한다.
+
+JSON 형식:
+{{
+  "selected_index": 1,
+  "reason": ""
+}}
+
+기술명: {data.get('marketing_title','')}
+기술 한줄요약: {data.get('subtitle','')}
+적용분야:
+{app_text}
+
+시장 후보 목록:
+{cand_text}
+"""
+    try:
+        res = client.responses.create(
+            model=TEXT_MODEL_FIXED,
+            input=prompt,
+            tools=[{"type": "web_search_preview"}],
+            temperature=0.1,
+        )
+        parsed = safe_json_parse(res.output_text)
+        idx = int(parsed.get("selected_index", 1)) - 1
+        if 0 <= idx < len(candidates):
+            chosen = dict(candidates[idx])
+            chosen["selection_reason"] = str(parsed.get("reason") or "").strip()
+            return chosen
+    except Exception:
+        pass
+    return candidates[0]
+
+
+def select_representative_market(data: Dict[str, Any]) -> Dict[str, str]:
+    """후보 2~3개를 뽑고, 그중 검색 결과가 가장 잘 나오는 시장을 최종 선택한다."""
+    candidates = select_market_candidates(data)
+    return choose_best_market_candidate(data, candidates)
+
+
 def generate_market_info_with_web(data: Dict[str, Any]) -> Dict[str, Any]:
     client = get_client()
     apps = data.get("applications", [])[:3]
@@ -969,9 +1117,22 @@ def generate_market_info_with_web(data: Dict[str, Any]) -> Dict[str, Any]:
     for i, app in enumerate(apps, 1):
         app_lines.append(f"{i}. {app.get('name','')} - {app.get('description','')}")
     app_text = "\n".join(app_lines)
+    rep_market = select_representative_market(data)
+
     prompt = f"""
 너는 대학 기술소개자료(SMK)에 들어갈 시장현황을 조사하는 리서치 전문가다.
 반드시 글로벌(Global/Worldwide) 시장 기준으로만 조사한다. 국내/한국 시장 수치는 사용하지 않는다.
+
+가장 중요한 규칙:
+- 기술명 자체를 검색어/시장명으로 쓰지 말고, 먼저 선정된 대표 적용시장을 기준으로 검색한다.
+- 아래의 대표 적용시장 1개를 우선 사용해서 글로벌 시장 CAGR/시장규모/전망을 찾는다.
+- display_title은 기술명이 아니라 대표 적용시장 이름으로 작성한다.
+
+대표 적용시장(이미 선정됨):
+- 한글 시장명: {rep_market.get('market_name_ko','')}
+- 영문 시장명: {rep_market.get('market_name_en','')}
+- 권장 표시 제목: {rep_market.get('display_title','')}
+- 권장 검색 키워드: {rep_market.get('search_keywords','')}
 
 중요 원칙:
 - 웹 검색으로 확인한 실제 공개 출처의 수치만 사용한다.
@@ -982,6 +1143,7 @@ def generate_market_info_with_web(data: Dict[str, Any]) -> Dict[str, Any]:
 - 수치 검증이 어렵지만 공개 웹페이지에서 관련 시장 그래프 이미지를 찾으면 graph_image_url에 직접 이미지 URL을 넣고, source_title/source_url/source_year/summary를 함께 채운다. 이 경우 verified=false여도 된다.
 - graph_image_url은 실제 접근 가능한 공개 이미지 URL만 넣는다. 없으면 빈 문자열.
 - summary는 출처 수치 또는 공개 그래프를 바탕으로 한 줄로만 작성한다.
+- market_name은 대표 적용시장 이름으로 작성한다.
 - 출력은 JSON만 반환한다.
 
 JSON 형식:
@@ -1004,7 +1166,7 @@ JSON 형식:
   "verified": true
 }}
 
-기술명: {data.get('marketing_title','')}
+기술명(참고용, 시장명으로 쓰지 말 것): {data.get('marketing_title','')}
 기술 한줄요약: {data.get('subtitle','')}
 적용분야:
 {app_text}
@@ -1018,12 +1180,25 @@ JSON 형식:
         )
         parsed = normalize_market_info(safe_json_parse(res.output_text))
         parsed["market_scope"] = "global"
+
+        # 후처리: display title은 항상 대표 적용시장 중심으로 정리
+        default_market_name = parsed.get("market_name") or rep_market.get("market_name_ko") or rep_market.get("market_name_en")
+        if not parsed.get("market_name"):
+            parsed["market_name"] = default_market_name
+        parsed_title = str(parsed.get("display_title") or "").strip()
+        tech_title = str(data.get("marketing_title") or "").strip()
+        if (not parsed_title) or (tech_title and tech_title in parsed_title):
+            parsed["display_title"] = rep_market.get("display_title") or f"글로벌 {default_market_name} 시장"
+
         parsed["verified"] = bool(parsed.get("verified")) and is_valid_market_info(parsed)
         if not parsed["verified"] and not has_market_graph_image(parsed):
             parsed["error"] = "검증된 수치 또는 활용 가능한 공개 그래프 이미지를 찾지 못했습니다."
         return parsed
     except Exception as e:
-        return empty_market_info(f"시장현황 웹 검색 실패: {e}")
+        fallback = empty_market_info(f"시장현황 웹 검색 실패: {e}")
+        fallback["market_name"] = rep_market.get("market_name_ko") or rep_market.get("market_name_en")
+        fallback["display_title"] = rep_market.get("display_title") or fallback.get("display_title")
+        return fallback
 
 def build_market_series(info: Dict[str, Any]) -> tuple[list[int], list[float], float, str]:
     m = normalize_market_info(info)
