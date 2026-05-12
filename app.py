@@ -1,16 +1,21 @@
 import os
 import re
 import json
+import math
 import base64
 import tempfile
 import zipfile
 import shutil
+import requests
 from io import BytesIO
 from typing import Any, Dict, List, Tuple
 
 import fitz
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont, ImageStat
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from openai import OpenAI
 from pptx import Presentation
 from pptx.util import Inches, Pt
@@ -281,7 +286,7 @@ def save_uploaded_file(uploaded_file) -> str:
 
 def extract_patent_text(pdf_path: str) -> str:
     doc = fitz.open(pdf_path)
-    text = "\n".join([p.get_text("text") for p in doc])
+    text = "\\n".join([p.get_text("text") for p in doc])
     doc.close()
     return text[:60000]
 
@@ -694,7 +699,7 @@ def generate_application_images_set(apps: List[Dict[str, Any]]) -> List[Image.Im
     app_text = []
     for idx, app in enumerate(apps[:3], 1):
         app_text.append(f"{idx}. {app.get('name','')} - {app.get('description','')}")
-    joined = "\n".join(app_text)
+    joined = "\\n".join(app_text)
     prompt = f"""
 Create a horizontal set of THREE matching application icons for a Korean university technology brief.
 The three icons must look like they belong to the exact same icon family.
@@ -868,6 +873,263 @@ def normalize_ip(ip: Dict[str, Any]) -> Dict[str, str]:
         "applicant": str(ip.get("applicant") or ""),
     }
 
+
+def normalize_market_info(info: Dict[str, Any] | None) -> Dict[str, Any]:
+    info = info or {}
+    return {
+        "market_scope": str(info.get("market_scope") or "global"),
+        "market_name": str(info.get("market_name") or info.get("name") or ""),
+        "display_title": str(info.get("display_title") or info.get("title") or ""),
+        "base_year": str(info.get("base_year") or ""),
+        "end_year": str(info.get("end_year") or ""),
+        "base_value": str(info.get("base_value") or ""),
+        "end_value": str(info.get("end_value") or ""),
+        "unit": str(info.get("unit") or ""),
+        "cagr": str(info.get("cagr") or info.get("growth_rate") or ""),
+        "summary": str(info.get("summary") or ""),
+        "source_title": str(info.get("source_title") or ""),
+        "source_url": str(info.get("source_url") or ""),
+        "source_year": str(info.get("source_year") or ""),
+        "graph_image_url": str(info.get("graph_image_url") or ""),
+        "graph_image_caption": str(info.get("graph_image_caption") or ""),
+        "verified": bool(info.get("verified", False)),
+        "error": str(info.get("error") or ""),
+    }
+
+def _safe_float(v, default=0.0):
+    try:
+        s = str(v).replace(",", "").replace("%", "").strip()
+        return float(s) if s else default
+    except Exception:
+        return default
+
+def _safe_int(v, default=0):
+    try:
+        s = re.sub(r"[^0-9-]", "", str(v))
+        return int(s) if s else default
+    except Exception:
+        return default
+
+
+def empty_market_info(reason: str = "검증 가능한 글로벌 시장 데이터를 찾지 못했습니다.") -> Dict[str, Any]:
+    return normalize_market_info({
+        "market_scope": "global",
+        "market_name": "글로벌 시장",
+        "display_title": "글로벌 시장현황",
+        "summary": "검증 가능한 출처 확인 후 입력이 필요합니다.",
+        "verified": False,
+        "error": reason,
+    })
+
+def has_market_graph_image(info: Dict[str, Any]) -> bool:
+    m = normalize_market_info(info)
+    return bool(m.get("graph_image_url") and m.get("source_title") and m.get("source_url"))
+
+def download_image_from_url(url: str, timeout: int = 12) -> Image.Image | None:
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, timeout=timeout, headers=headers)
+        r.raise_for_status()
+        ctype = (r.headers.get("content-type") or "").lower()
+        if not any(x in ctype for x in ["image/", "application/octet-stream", "binary/"]):
+            return None
+        return Image.open(BytesIO(r.content)).convert("RGB")
+    except Exception:
+        return None
+
+def make_market_placeholder(primary=(0,55,135), message1="검증된 시장 그래프 없음", message2="출처 확인 후 시장현황을 업데이트하세요") -> Image.Image:
+    img = Image.new("RGB", (920, 310), "white")
+    d = ImageDraw.Draw(img)
+    d.rectangle((0, 0, 919, 309), outline=(220,230,242), width=2)
+    d.text((70, 110), message1, font=load_font(34, True), fill=primary)
+    d.text((70, 165), message2, font=load_font(23, False), fill=(92,99,110))
+    return img
+
+def get_market_visual(info: Dict[str, Any], primary=(0,55,135), accent=(0,165,185)) -> tuple[Image.Image, str]:
+    if is_valid_market_info(info):
+        return generate_market_chart(info, primary=primary, accent=accent), "generated_chart"
+    if has_market_graph_image(info):
+        img = download_image_from_url(normalize_market_info(info).get("graph_image_url", ""))
+        if img is not None:
+            return img, "source_graph_image"
+    return make_market_placeholder(primary=primary), "placeholder"
+
+def is_valid_market_info(info: Dict[str, Any]) -> bool:
+    m = normalize_market_info(info)
+    has_source = bool(m.get("source_title") and m.get("source_url"))
+    has_cagr = bool(str(m.get("cagr") or "").strip())
+    has_values = bool(str(m.get("base_value") or "").strip() and str(m.get("end_value") or "").strip())
+    has_years = bool(str(m.get("base_year") or "").strip() and str(m.get("end_year") or "").strip())
+    return has_source and has_years and (has_cagr or has_values)
+
+def generate_market_info_with_web(data: Dict[str, Any]) -> Dict[str, Any]:
+    client = get_client()
+    apps = data.get("applications", [])[:3]
+    app_lines = []
+    for i, app in enumerate(apps, 1):
+        app_lines.append(f"{i}. {app.get('name','')} - {app.get('description','')}")
+    app_text = "\n".join(app_lines)
+    prompt = f"""
+너는 대학 기술소개자료(SMK)에 들어갈 시장현황을 조사하는 리서치 전문가다.
+반드시 글로벌(Global/Worldwide) 시장 기준으로만 조사한다. 국내/한국 시장 수치는 사용하지 않는다.
+
+중요 원칙:
+- 웹 검색으로 확인한 실제 공개 출처의 수치만 사용한다.
+- CAGR, 시장규모, 기준연도, 전망연도는 출처에 근거해야 한다.
+- source_title, source_url, source_year는 가능한 한 정확히 채운다.
+- 임의 추정, 보수적 추정, 일반론, 가짜 URL 금지.
+- 수치가 충분히 검증되면 verified=true로 하고 CAGR/연도/시장규모를 채운다.
+- 수치 검증이 어렵지만 공개 웹페이지에서 관련 시장 그래프 이미지를 찾으면 graph_image_url에 직접 이미지 URL을 넣고, source_title/source_url/source_year/summary를 함께 채운다. 이 경우 verified=false여도 된다.
+- graph_image_url은 실제 접근 가능한 공개 이미지 URL만 넣는다. 없으면 빈 문자열.
+- summary는 출처 수치 또는 공개 그래프를 바탕으로 한 줄로만 작성한다.
+- 출력은 JSON만 반환한다.
+
+JSON 형식:
+{{
+  "market_scope": "global",
+  "market_name": "",
+  "display_title": "",
+  "base_year": "",
+  "end_year": "",
+  "base_value": "",
+  "end_value": "",
+  "unit": "",
+  "cagr": "",
+  "summary": "",
+  "source_title": "",
+  "source_url": "",
+  "source_year": "",
+  "graph_image_url": "",
+  "graph_image_caption": "",
+  "verified": true
+}}
+
+기술명: {data.get('marketing_title','')}
+기술 한줄요약: {data.get('subtitle','')}
+적용분야:
+{app_text}
+"""
+    try:
+        res = client.responses.create(
+            model=TEXT_MODEL_FIXED,
+            input=prompt,
+            tools=[{"type": "web_search_preview"}],
+            temperature=0.1,
+        )
+        parsed = normalize_market_info(safe_json_parse(res.output_text))
+        parsed["market_scope"] = "global"
+        parsed["verified"] = bool(parsed.get("verified")) and is_valid_market_info(parsed)
+        if not parsed["verified"] and not has_market_graph_image(parsed):
+            parsed["error"] = "검증된 수치 또는 활용 가능한 공개 그래프 이미지를 찾지 못했습니다."
+        return parsed
+    except Exception as e:
+        return empty_market_info(f"시장현황 웹 검색 실패: {e}")
+
+def build_market_series(info: Dict[str, Any]) -> tuple[list[int], list[float], float, str]:
+    m = normalize_market_info(info)
+    if not is_valid_market_info(m):
+        return [], [], 0.0, ""
+    start = _safe_int(m.get("base_year"), 0)
+    end = _safe_int(m.get("end_year"), 0)
+    if start <= 0 or end <= start:
+        return [], [], 0.0, ""
+    cagr = _safe_float(m.get("cagr"), 0.0)
+    base_value = _safe_float(m.get("base_value"), 0.0)
+    end_value = _safe_float(m.get("end_value"), 0.0)
+    unit = m.get("unit") or "지수(base=100)"
+    n = max(1, end - start)
+    if cagr <= 0 and base_value > 0 and end_value > 0:
+        try:
+            cagr = ((end_value / base_value) ** (1 / n) - 1) * 100.0
+        except Exception:
+            cagr = 0.0
+    if cagr <= 0:
+        return [], [], 0.0, ""
+    if base_value <= 0:
+        base_value = 100.0
+        unit = "지수(base=100)"
+    years = list(range(start, end + 1))
+    values = [base_value * ((1 + cagr / 100.0) ** (yr - start)) for yr in years]
+    if end_value > 0 and values:
+        scale = end_value / values[-1]
+        values = [v * scale for v in values]
+    return years, values, cagr, unit
+
+def format_market_value(value: float, unit: str) -> str:
+    unit = str(unit or "").strip()
+    if unit.startswith("지수"):
+        return f"{value:.0f}"
+    if value >= 100:
+        return f"{value:,.0f}"
+    if value >= 10:
+        return f"{value:,.1f}"
+    return f"{value:,.2f}"
+
+def generate_market_chart(info: Dict[str, Any], primary=(0,55,135), accent=(0,165,185)) -> Image.Image:
+    years, values, cagr, unit = build_market_series(info)
+    if not years or not values:
+        return make_market_placeholder(primary=primary, message1="검증된 글로벌 CAGR 데이터 없음", message2="출처 확인 후 시장현황을 업데이트하세요")
+    plt.figure(figsize=(5.1, 2.55), dpi=180)
+    ax = plt.gca()
+    ax.plot(years, values, marker='o', linewidth=2.5, color=(primary[0]/255, primary[1]/255, primary[2]/255))
+    ax.fill_between(years, values, [min(values)]*len(values), alpha=0.08, color=(accent[0]/255, accent[1]/255, accent[2]/255))
+    ax.set_xticks(years)
+    ax.tick_params(axis='x', labelsize=7)
+    ax.tick_params(axis='y', labelsize=7)
+    ax.grid(True, axis='y', alpha=0.22)
+    ax.set_xlim(min(years), max(years))
+    ax.set_ylabel(unit, fontsize=7)
+    ax.set_title(f"Global CAGR {cagr:.1f}%", fontsize=9, pad=6)
+    for x, y in [(years[0], values[0]), (years[-1], values[-1])]:
+        ax.annotate(format_market_value(y, unit), (x, y), textcoords="offset points", xytext=(0, 6), ha='center', fontsize=7)
+    plt.tight_layout()
+    bio = BytesIO()
+    plt.savefig(bio, format='png', bbox_inches='tight', facecolor='white')
+    plt.close()
+    bio.seek(0)
+    return Image.open(bio).convert('RGB')
+
+def market_summary_text(info: Dict[str, Any]) -> str:
+    m = normalize_market_info(info)
+    if not is_valid_market_info(m):
+        return "검증 가능한 글로벌 시장 출처 확인이 필요합니다."
+    summary = str(m.get("summary") or "").strip()
+    if summary:
+        return summary
+    years, values, cagr, unit = build_market_series(m)
+    if years:
+        return f"글로벌 {m.get('market_name') or '관련 시장'}은 연평균 {cagr:.1f}% 성장 전망입니다."
+    return "검증 가능한 글로벌 시장 출처 확인이 필요합니다."
+
+def market_source_text(info: Dict[str, Any]) -> str:
+    m = normalize_market_info(info)
+    if not is_valid_market_info(m):
+        return "출처: 데이터 확인 필요"
+    title = m.get("source_title") or "출처"
+    year = f" ({m.get('source_year')})" if m.get("source_year") else ""
+    return f"출처: {title}{year}"
+
+def sanitize_filename_component(value: str) -> str:
+    value = str(value or "").strip() or "미입력"
+    value = re.sub(r'[\\/:*?"<>|]+', '_', value)
+    value = re.sub(r'\s+', ' ', value).strip()
+    value = value.replace(' ', '_')
+    value = re.sub(r'_+', '_', value)
+    return value[:80] or "미입력"
+
+def build_export_basename(data: Dict[str, Any]) -> str:
+    ip = normalize_ip(data.get("ip", {}))
+    invention_title = ip.get("title") or data.get("original_title") or data.get("marketing_title")
+    parts = [
+        data.get("university", ""),
+        "SMK",
+        invention_title,
+        data.get("professor", ""),
+        data.get("department", ""),
+        ip.get("application_number", ""),
+    ]
+    return "_".join(sanitize_filename_component(p) for p in parts)
+
 def _font_size(font, fallback=18):
     return int(getattr(font, "size", fallback))
 
@@ -992,7 +1254,7 @@ def _draw_shadowed_card(draw, xyxy, radius=28, fill=(255,255,255), outline=(220,
 
 
 def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str, university_logo: Image.Image | None = None, pium_logo: Image.Image | None = None, qr_img: Image.Image | None = None, piumlink_logo: Image.Image | None = None) -> Image.Image:
-    """사용자가 수정한 PPTX 양식에 맞춘 1페이지 PIUM Tech Brief 렌더러."""
+    """시장현황 영역을 포함한 1페이지 PIUM Tech Brief 렌더러."""
     W, H = 1240, 1754
     im = Image.new("RGB", (W, H), "white")
     d = ImageDraw.Draw(im)
@@ -1003,6 +1265,7 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     uni_line = pal["uni_line"]
     primary = pal["pium_blue"]
     secondary = pal["tech_blue"]
+    accent = pal["tech_cyan"]
     sky = pal["tech_pale"]
     sky2 = pal["tech_pale2"]
     line = pal["tech_line"]
@@ -1012,12 +1275,10 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
 
     d.rectangle((0, 0, W, H), fill=(255,255,255))
 
-    # ---------------- Header ----------------
     header_h = 248
     d.rectangle((0, 0, W, header_h), fill=uni_pale)
     d.line((0, header_h, W, header_h), fill=mix(line, (160,160,160), 0.15), width=2)
 
-    # 대학 로고 / 우측 PIUM + PIUMLINK를 같은 상단 기준선으로 정렬
     uni_logo_size = 124
     uni_logo_x, uni_logo_y = 28, 24
     left_logo = make_transparent_logo_canvas(university_logo, size=(uni_logo_size, uni_logo_size), padding=0) if university_logo else make_university_logo_box(None, data.get('university',''), size=(uni_logo_size, uni_logo_size), bg=uni_pale, primary=uni_primary)
@@ -1028,7 +1289,6 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     if pium_logo is not None:
         pium_canvas = make_transparent_logo_canvas(pium_logo, size=(145, 54), padding=0)
         im.paste(pium_canvas, (right_x+2, top_y), pium_canvas)
-    # PIUMLINK는 사용자가 넣은 QR/로고 그대로, 별도 박스 없이 크게 배치
     if piumlink_logo is not None:
         link_size = 116
         link = make_transparent_logo_canvas(piumlink_logo, size=(link_size, link_size), padding=0)
@@ -1037,91 +1297,117 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     header_x = 190
     header_w = right_x - header_x - 22
     kicker = f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} 교수"
-    draw_fitted_wrapped(d, (header_x, 54), kicker, 24, False, uni_primary, header_w, 30, line_gap=2, min_size=17, max_lines=1)
-    draw_fitted_wrapped(d, (header_x, 92), data.get("marketing_title", "기술명"), 43, True, uni_primary, header_w, 78, line_gap=3, min_size=28, max_lines=2)
+    draw_fitted_wrapped(d, (header_x, 54), kicker, 25, False, uni_primary, header_w, 32, line_gap=2, min_size=17, max_lines=1)
+    draw_fitted_wrapped(d, (header_x, 92), data.get("marketing_title", "기술명"), 44, True, uni_primary, header_w, 82, line_gap=3, min_size=29, max_lines=2)
 
     sub_x, sub_y, sub_w, sub_h = header_x, 176, 820, 48
     _draw_shadowed_card(d, (sub_x, sub_y, sub_x+sub_w, sub_y+sub_h), radius=12, fill=(255,255,255), outline=uni_line, width=1, shadow=True)
-    draw_fitted_wrapped(d, (sub_x+22, sub_y+12), data.get("subtitle", ""), 20, False, gray, sub_w-44, sub_h-16, line_gap=3, min_size=15, max_lines=1)
+    draw_fitted_wrapped(d, (sub_x+22, sub_y+11), data.get("subtitle", ""), 21, False, gray, sub_w-44, sub_h-14, line_gap=3, min_size=15, max_lines=1)
 
-    # 공통 폭: PPT 수정본 기준의 넓은 본문 컨테이너
     X = 28
     CW = W - 56
     card_line = line
-    sec_font = load_font(24, True)
+    sec_font = load_font(26, True)
 
-    # ---------------- Applications ----------------
-    app_y, app_h = 294, 238
+    # Applications + Market
+    app_y, app_h = 294, 262
     _draw_shadowed_card(d, (X, app_y, X+CW, app_y+app_h), radius=34, fill=(255,255,255), outline=card_line, width=2, shadow=True)
-    draw_section_title(d, X+40, app_y+34, "적용분야 / 제품", sec_font, primary)
+    left_w = 618
+    market_x = X + left_w + 10
+    market_w = CW - left_w - 18
+    draw_section_title(d, X+32, app_y+28, "적용분야 / 제품", sec_font, primary)
+    draw_section_title(d, market_x+16, app_y+28, "시장현황", sec_font, primary)
+    d.line((market_x-2, app_y+22, market_x-2, app_y+app_h-22), fill=mix(card_line, (255,255,255), 0.18), width=2)
+
     apps = data.get("applications", [])[:3]
-    col_w = CW // 3
+    app_inner_x = X + 22
+    app_inner_w = left_w - 34
+    col_gap = 6
+    col_w = (app_inner_w - col_gap*2) // 3
+    icon_size = (108, 84)
+    icon_y = app_y + 82
     for i in range(3):
-        col_x = X + i*col_w
+        col_x = app_inner_x + i*(col_w + col_gap)
         if i > 0:
-            sep_x = col_x
-            d.line((sep_x, app_y+88, sep_x, app_y+196), fill=mix(card_line, (255,255,255), 0.20), width=1)
-        icon_size = (135, 102)
-        icon_y = app_y + 74
+            sep_x = col_x - col_gap//2
+            d.line((sep_x, app_y+84, sep_x, app_y+204), fill=mix(card_line, (255,255,255), 0.24), width=1)
         if i < len(app_imgs):
             icon = fit_image(app_imgs[i], icon_size, bg=(255,255,255), trim=True)
             im.paste(icon, (col_x + (col_w-icon_size[0])//2, icon_y))
         app = apps[i] if i < len(apps) else {"name":""}
-        # 명칭은 박스 안에서 충분한 하단 여백을 두고 중앙 정렬
-        draw_centered_wrapped(d, (col_x+20, app_y+178, col_x+col_w-20, app_y+218), app.get("name", ""), load_font(17, True), black, max_lines=2, line_gap=3)
+        draw_centered_wrapped(d, (col_x+6, app_y+174, col_x+col_w-6, app_y+228), app.get("name", ""), load_font(19, True), black, max_lines=2, line_gap=3)
 
-    # ---------------- Overview / Differentiation ----------------
-    y = 560
+    market_info = normalize_market_info(data.get("market_info", {}))
+    market_title = market_info.get("display_title") or market_info.get("market_name") or "관련 시장 전망"
+    draw_fitted_wrapped(d, (market_x+18, app_y+74), market_title, 19, True, black, market_w-36, 42, line_gap=2, min_size=14, max_lines=2)
+    if is_valid_market_info(market_info):
+        cagr = _safe_float(market_info.get("cagr"), 0.0)
+        d.text((market_x+18, app_y+114), f"Global CAGR {cagr:.1f}%", font=load_font(16, True), fill=secondary)
+    elif has_market_graph_image(market_info):
+        d.text((market_x+18, app_y+114), "공개 그래프 기반 글로벌 시장 추이", font=load_font(16, True), fill=secondary)
+    else:
+        d.text((market_x+18, app_y+114), "Global 시장 데이터 확인 필요", font=load_font(16, True), fill=secondary)
+    chart, _market_visual_mode = get_market_visual(market_info, primary=primary, accent=accent)
+    chart_box_x, chart_box_y = market_x+14, app_y+136
+    chart_box_w, chart_box_h = market_w-28, 84
+    _draw_shadowed_card(d, (chart_box_x, chart_box_y, chart_box_x+chart_box_w, chart_box_y+chart_box_h), radius=14, fill=(255,255,255), outline=card_line, width=1, shadow=False)
+    chart_img = fit_image(chart, (chart_box_w-12, chart_box_h-10), bg=(255,255,255), trim=False)
+    im.paste(chart_img, (chart_box_x+6, chart_box_y+5))
+    summary = market_summary_text(market_info)
+    _draw_shadowed_card(d, (market_x+14, app_y+224, market_x+market_w-14, app_y+250), radius=12, fill=sky2, outline=card_line, width=1, shadow=False)
+    draw_fitted_wrapped(d, (market_x+24, app_y+226), summary, 12, False, gray, market_w-48, 15, line_gap=2, min_size=10, max_lines=1)
+    draw_fitted_wrapped(d, (market_x+24, app_y+240), market_source_text(market_info), 10, False, gray, market_w-48, 12, line_gap=1, min_size=8, max_lines=1)
+
+    # Overview / Differentiation
+    y = 582
     gap = 30
     box_w = (CW - gap) // 2
     left_x = X
     right_x2 = X + box_w + gap
-    box_h = 300
+    box_h = 290
     for bx, title, items in [
         (left_x, "기술개요", data.get("overview", [])[:3]),
         (right_x2, "핵심 차별성", data.get("differentiation", [])[:3]),
     ]:
         _draw_shadowed_card(d, (bx, y, bx+box_w, y+box_h), radius=28, fill=sky, outline=card_line, width=2, shadow=True)
         draw_section_title(d, bx+36, y+34, title, sec_font, primary)
-        draw_bullets_fit(d, bx+42, y+88, items, 17, False, black, box_w-84, box_h-112, bullet="›", line_gap=4, item_gap=8, min_size=12, max_lines_per_item=3)
+        draw_bullets_fit(d, bx+42, y+88, items, 19, False, black, box_w-84, box_h-112, bullet="›", line_gap=4, item_gap=8, min_size=13, max_lines_per_item=3)
 
-    # ---------------- Representative / Competitiveness ----------------
-    y = 890
+    # Representative / Competitiveness
+    y = 900
     rep_w_box = 380
     comp_x = X + rep_w_box + 22
     comp_w = X + CW - comp_x
-    comp_h = 332
+    comp_h = 322
     _draw_shadowed_card(d, (X, y, X+rep_w_box, y+comp_h), radius=28, fill=(255,255,255), outline=card_line, width=2, shadow=True)
     _draw_shadowed_card(d, (comp_x, y, comp_x+comp_w, y+comp_h), radius=28, fill=(255,255,255), outline=card_line, width=2, shadow=True)
     draw_section_title(d, X+36, y+34, "대표도면", sec_font, primary)
     draw_section_title(d, comp_x+36, y+34, "기술 경쟁력", sec_font, primary)
 
-    rep = fit_image(rep_img, (rep_w_box-74, 220), bg=(255,255,255), trim=True)
-    im.paste(rep, (X+37, y+84))
+    rep = fit_image(rep_img, (rep_w_box-74, 214), bg=(255,255,255), trim=True)
+    im.paste(rep, (X+37, y+82))
 
-    # 기술 경쟁력 내부 박스: PPT 수정본처럼 넓고 낮게 배치
     inner_x = comp_x + 44
     inner_w = comp_w - 70
-    sub1_y, sub1_h = y+76, 106
-    sub2_y, sub2_h = y+200, 112
+    sub1_y, sub1_h = y+76, 102
+    sub2_y, sub2_h = y+194, 108
     _draw_shadowed_card(d, (inner_x, sub1_y, inner_x+inner_w, sub1_y+sub1_h), radius=16, fill=(255,255,255), outline=card_line, width=1, shadow=True)
-    d.text((inner_x+20, sub1_y+15), "기존기술 한계", font=load_font(18, True), fill=gray)
-    draw_bullets_fit(d, inner_x+22, sub1_y+47, data.get("limitations", [])[:2], 13, False, black, inner_w-44, sub1_h-52, bullet="•", line_gap=3, item_gap=2, min_size=10, max_lines_per_item=2)
+    d.text((inner_x+20, sub1_y+14), "기존기술 한계", font=load_font(19, True), fill=gray)
+    draw_bullets_fit(d, inner_x+22, sub1_y+42, data.get("limitations", [])[:2], 14, False, black, inner_w-44, sub1_h-48, bullet="•", line_gap=3, item_gap=2, min_size=11, max_lines_per_item=2)
 
     _draw_shadowed_card(d, (inner_x, sub2_y, inner_x+inner_w, sub2_y+sub2_h), radius=16, fill=sky2, outline=card_line, width=1, shadow=True)
-    d.text((inner_x+20, sub2_y+15), "기술적 우위", font=load_font(18, True), fill=secondary)
-    draw_bullets_fit(d, inner_x+22, sub2_y+47, data.get("technical_advantages", [])[:2], 13, False, primary, inner_w-44, sub2_h-52, bullet="▸", line_gap=3, item_gap=2, min_size=10, max_lines_per_item=2)
+    d.text((inner_x+20, sub2_y+14), "기술적 우위", font=load_font(19, True), fill=secondary)
+    draw_bullets_fit(d, inner_x+22, sub2_y+42, data.get("technical_advantages", [])[:2], 14, False, primary, inner_w-44, sub2_h-48, bullet="▸", line_gap=3, item_gap=2, min_size=11, max_lines_per_item=2)
 
-    # ---------------- IP Status ----------------
-    y = 1264
+    # IP full width
+    y = 1252
     ip = normalize_ip(data.get("ip", {}))
     ip_h = 220
-    ip_w = CW
-    _draw_shadowed_card(d, (X, y, X+ip_w, y+ip_h), radius=28, fill=sky2, outline=card_line, width=2, shadow=True)
+    _draw_shadowed_card(d, (X, y, X+CW, y+ip_h), radius=28, fill=sky2, outline=card_line, width=2, shadow=True)
     draw_section_title(d, X+36, y+30, "지식재산권 현황", sec_font, primary)
 
     table_x, table_y = X+28, y+72
-    table_w, table_h = ip_w-56, 132
+    table_w, table_h = CW-56, 132
     header_h2 = 40
     col1 = int(table_w*0.45)
     col2 = int(table_w*0.28)
@@ -1132,47 +1418,23 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     c2 = c1 + col2
     for xx in [c1, c2]:
         d.line((xx, table_y, xx, table_y+table_h), fill=card_line, width=1)
-    draw_centered_wrapped(d, (table_x+8, table_y+4, c1-8, table_y+header_h2-2), "발명의 명칭", load_font(17, True), black, max_lines=1)
-    draw_centered_wrapped(d, (c1+8, table_y+3, c2-8, table_y+header_h2-2), "출원번호\n(등록번호)", load_font(12, True), black, max_lines=2, line_gap=1)
-    draw_centered_wrapped(d, (c2+8, table_y+3, table_x+table_w-8, table_y+header_h2-2), "출원일자\n(등록일자)", load_font(12, True), black, max_lines=2, line_gap=1)
-    draw_centered_wrapped(d, (table_x+12, table_y+header_h2+8, c1-12, table_y+table_h-8), ip["title"] or data.get("original_title", ""), load_font(12, False), black, max_lines=2, line_gap=2)
+    draw_centered_wrapped(d, (table_x+8, table_y+4, c1-8, table_y+header_h2-2), "발명의 명칭", load_font(19, True), black, max_lines=1)
+    draw_centered_wrapped(d, (c1+8, table_y+3, c2-8, table_y+header_h2-2), "출원번호\n(등록번호)", load_font(14, True), black, max_lines=2, line_gap=1)
+    draw_centered_wrapped(d, (c2+8, table_y+3, table_x+table_w-8, table_y+header_h2-2), "출원일자\n(등록일자)", load_font(14, True), black, max_lines=2, line_gap=1)
+    draw_centered_wrapped(d, (table_x+12, table_y+header_h2+8, c1-12, table_y+table_h-8), ip["title"] or data.get("original_title", ""), load_font(15, False), black, max_lines=2, line_gap=2)
     num_text = f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number']
     date_text = f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date']
-    draw_centered_wrapped(d, (c1+10, table_y+header_h2+8, c2-10, table_y+table_h-8), num_text, load_font(15, False), black, max_lines=2, line_gap=3)
-    draw_centered_wrapped(d, (c2+10, table_y+header_h2+8, table_x+table_w-10, table_y+table_h-8), date_text, load_font(15, False), black, max_lines=2, line_gap=3)
+    draw_centered_wrapped(d, (c1+10, table_y+header_h2+8, c2-10, table_y+table_h-8), num_text, load_font(17, False), black, max_lines=2, line_gap=3)
+    draw_centered_wrapped(d, (c2+10, table_y+header_h2+8, table_x+table_w-10, table_y+table_h-8), date_text, load_font(17, False), black, max_lines=2, line_gap=3)
 
-    # ---------------- Contact ----------------
-    y = 1518
+    # Contact
+    y = 1504
     contact_h = 78
     _draw_shadowed_card(d, (X, y, X+CW, y+contact_h), radius=18, fill=(255,255,255), outline=card_line, width=2, shadow=True)
-    d.text((X+42, y+25), "문의처", font=load_font(24, True), fill=primary)
-    draw_fitted_wrapped(d, (X+160, y+29), contact, 18, False, black, CW-190, 28, line_gap=3, min_size=12, max_lines=1)
+    d.text((X+42, y+23), "문의처", font=load_font(26, True), fill=primary)
+    draw_fitted_wrapped(d, (X+160, y+27), contact, 20, False, black, CW-190, 30, line_gap=3, min_size=13, max_lines=1)
 
     return im
-
-def sanitize_filename_part(value: Any, fallback: str = "미입력") -> str:
-    """Windows/macOS에서 안전하게 쓸 수 있도록 파일명 구성 요소를 정리한다."""
-    text = str(value or "").strip()
-    if not text:
-        text = fallback
-    text = re.sub(r"[\\/:*?\"<>|\r\n\t]+", "_", text)
-    text = re.sub(r"\s+", " ", text).strip(" ._")
-    return text or fallback
-
-
-def make_smk_filename_base(data: Dict[str, Any]) -> str:
-    """대학명_SMK_발명의명칭_연구자명_소속_출원번호 형식의 파일명 base를 만든다."""
-    ip = normalize_ip(data.get("ip", {}))
-    parts = [
-        data.get("university", ""),
-        "SMK",
-        ip.get("title") or data.get("original_title") or data.get("marketing_title", ""),
-        data.get("professor", ""),
-        data.get("department", ""),
-        ip.get("application_number", ""),
-    ]
-    return "_".join(sanitize_filename_part(v) for v in parts)
-
 
 # -----------------------------------------------------
 # PDF / PPTX
@@ -1222,13 +1484,14 @@ def add_rect(slide, x, y, w, h, fill=(255,255,255), outline=(220,230,242), radiu
 
 
 def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str, university_logo: Image.Image | None = None, pium_logo: Image.Image | None = None, qr_img: Image.Image | None = None, piumlink_logo: Image.Image | None = None) -> bytes:
-    """PPTX 수정용: 사용자가 수정한 PPT 템플릿과 유사한 박스형 레이아웃을 편집 가능한 객체로 구성."""
+    """시장현황 포함 PPTX 생성."""
     pal = get_visual_palette(university_logo)
     uni_primary = pal["uni_primary"]
     uni_pale = pal["uni_pale"]
     uni_line = pal["uni_line"]
     primary = pal["pium_blue"]
     secondary = pal["tech_blue"]
+    accent = pal["tech_cyan"]
     sky = pal["tech_pale"]
     sky2 = pal["tech_pale2"]
     line = pal["tech_line"]
@@ -1241,7 +1504,6 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     prs.slide_height = Inches(14.145)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
 
-    # Header
     add_rect(slide, 0, 0, 1240, 248, fill=uni_pale, outline=uni_pale)
     uni_logo_size = 124
     left_logo = make_transparent_logo_canvas(university_logo, size=(uni_logo_size, uni_logo_size), padding=0) if university_logo else make_university_logo_box(None, data.get('university',''), size=(uni_logo_size, uni_logo_size), bg=uni_pale, primary=uni_primary)
@@ -1258,71 +1520,95 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
 
     header_x = 190
     header_w = right_x - header_x - 22
-    add_textbox(slide, header_x, 54, header_w, 30, f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} 교수", 13, False, uni_primary)
-    add_textbox(slide, header_x, 92, header_w, 78, data.get("marketing_title", ""), 24, True, uni_primary)
+    add_textbox(slide, header_x, 54, header_w, 30, f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} 교수", 13.5, False, uni_primary)
+    add_textbox(slide, header_x, 92, header_w, 78, data.get("marketing_title", ""), 25, True, uni_primary)
     add_rect(slide, header_x, 176, 820, 48, fill=(255,255,255), outline=uni_line, radius=True)
-    add_textbox(slide, header_x+22, 188, 776, 26, data.get("subtitle", ""), 11, False, gray)
+    add_textbox(slide, header_x+22, 188, 776, 26, data.get("subtitle", ""), 11.5, False, gray)
 
     X = 28; CW = 1184
-    # Applications
-    app_y, app_h = 294, 238
+
+    # Applications + Market
+    app_y, app_h = 294, 262
     add_rect(slide, X, app_y, CW, app_h, fill=(255,255,255), outline=line, radius=True)
-    add_textbox(slide, X+40, app_y+34, 300, 36, "적용분야 / 제품", 14, True, primary)
+    left_w = 618
+    market_x = X + left_w + 10
+    market_w = CW - left_w - 18
+    add_textbox(slide, X+34, app_y+30, 240, 36, "적용분야 / 제품", 15.5, True, primary)
+    add_textbox(slide, market_x+18, app_y+30, 160, 36, "시장현황", 15.5, True, primary)
     apps = data.get("applications", [])[:3]
-    col_w = CW // 3
+    app_inner_x = X + 22
+    app_inner_w = left_w - 34
+    col_gap = 6
+    col_w = (app_inner_w - col_gap*2) // 3
     for i in range(3):
-        col_x = X + i*col_w
+        col_x = app_inner_x + i*(col_w + col_gap)
         if i < len(app_imgs):
-            icon_w, icon_h = 135, 102
-            slide.shapes.add_picture(img_bytes(fit_image(app_imgs[i], (icon_w, icon_h), trim=True)), px(col_x+(col_w-icon_w)//2), px(app_y+74), width=px(icon_w), height=px(icon_h))
+            icon_w, icon_h = 108, 84
+            slide.shapes.add_picture(img_bytes(fit_image(app_imgs[i], (icon_w, icon_h), trim=True)), px(col_x+(col_w-icon_w)//2), px(app_y+82), width=px(icon_w), height=px(icon_h))
         name = apps[i].get("name", "") if i < len(apps) else ""
-        add_textbox(slide, col_x+20, app_y+178, col_w-40, 40, name, 10.5, True, black, align=PP_ALIGN.CENTER)
+        add_textbox(slide, col_x+6, app_y+174, col_w-12, 48, name, 11.5, True, black, align=PP_ALIGN.CENTER)
+
+    market_info = normalize_market_info(data.get("market_info", {}))
+    market_title = market_info.get("display_title") or market_info.get("market_name") or "관련 시장 전망"
+    add_textbox(slide, market_x+18, app_y+74, market_w-36, 34, market_title, 11.5, True, black)
+    if is_valid_market_info(market_info):
+        cagr = _safe_float(market_info.get("cagr"), 0.0)
+        add_textbox(slide, market_x+18, app_y+106, market_w-36, 24, f"Global CAGR {cagr:.1f}%", 10.5, True, secondary)
+    elif has_market_graph_image(market_info):
+        add_textbox(slide, market_x+18, app_y+106, market_w-36, 24, "공개 그래프 기반 글로벌 시장 추이", 10.5, True, secondary)
+    else:
+        add_textbox(slide, market_x+18, app_y+106, market_w-36, 24, "Global 시장 데이터 확인 필요", 10.5, True, secondary)
+    chart, _market_visual_mode = get_market_visual(market_info, primary=primary, accent=accent)
+    slide.shapes.add_picture(img_bytes(fit_image(chart, (market_w-28, 84), trim=False)), px(market_x+14), px(app_y+136), width=px(market_w-28), height=px(84))
+    add_rect(slide, market_x+14, app_y+224, market_w-28, 26, fill=sky2, outline=line, radius=True)
+    add_textbox(slide, market_x+24, app_y+226, market_w-48, 13, market_summary_text(market_info), 7.4, False, gray)
+    add_textbox(slide, market_x+24, app_y+239, market_w-48, 10, market_source_text(market_info), 6.2, False, gray)
 
     # Overview / Difference
-    y=560; gap=30; box_w=(CW-gap)//2; box_h=300
+    y=582; gap=30; box_w=(CW-gap)//2; box_h=290
     for bx,title,items in [(X,"기술개요",data.get("overview",[])[:3]),(X+box_w+gap,"핵심 차별성",data.get("differentiation",[])[:3])]:
         add_rect(slide, bx, y, box_w, box_h, fill=sky, outline=line, radius=True)
-        add_textbox(slide, bx+36, y+34, 250, 34, title, 14, True, primary)
-        add_textbox(slide, bx+42, y+88, box_w-84, box_h-112, "\n".join(["› "+str(v) for v in items]), 9.5, False, black)
+        add_textbox(slide, bx+36, y+34, 250, 34, title, 15, True, primary)
+        add_textbox(slide, bx+42, y+88, box_w-84, box_h-112, "\n".join(["› "+str(v) for v in items]), 10.5, False, black)
 
     # Rep + competitiveness
-    y=890; rep_w_box=380; comp_x=X+rep_w_box+22; comp_w=X+CW-comp_x; comp_h=332
+    y=900; rep_w_box=380; comp_x=X+rep_w_box+22; comp_w=X+CW-comp_x; comp_h=322
     add_rect(slide, X, y, rep_w_box, comp_h, fill=(255,255,255), outline=line, radius=True)
     add_rect(slide, comp_x, y, comp_w, comp_h, fill=(255,255,255), outline=line, radius=True)
-    add_textbox(slide, X+36, y+34, 180, 34, "대표도면", 14, True, primary)
-    slide.shapes.add_picture(img_bytes(fit_image(rep_img, (rep_w_box-74,220), trim=True)), px(X+37), px(y+84), width=px(rep_w_box-74), height=px(220))
-    add_textbox(slide, comp_x+36, y+34, 220, 34, "기술 경쟁력", 14, True, primary)
+    add_textbox(slide, X+36, y+34, 180, 34, "대표도면", 15, True, primary)
+    slide.shapes.add_picture(img_bytes(fit_image(rep_img, (rep_w_box-74,214), trim=True)), px(X+37), px(y+82), width=px(rep_w_box-74), height=px(214))
+    add_textbox(slide, comp_x+36, y+34, 220, 34, "기술 경쟁력", 15, True, primary)
     inner_x=comp_x+44; inner_w=comp_w-70
-    add_rect(slide, inner_x, y+76, inner_w, 106, fill=(255,255,255), outline=line, radius=True)
-    add_textbox(slide, inner_x+20, y+91, 220, 24, "기존기술 한계", 10, True, gray)
-    add_textbox(slide, inner_x+22, y+123, inner_w-44, 52, "\n".join(["• "+str(v) for v in data.get("limitations",[])[:2]]), 7.2, False, black)
-    add_rect(slide, inner_x, y+200, inner_w, 112, fill=sky2, outline=line, radius=True)
-    add_textbox(slide, inner_x+20, y+215, 220, 24, "기술적 우위", 10, True, secondary)
-    add_textbox(slide, inner_x+22, y+247, inner_w-44, 56, "\n".join(["▸ "+str(v) for v in data.get("technical_advantages",[])[:2]]), 7.2, False, primary)
+    add_rect(slide, inner_x, y+76, inner_w, 102, fill=(255,255,255), outline=line, radius=True)
+    add_textbox(slide, inner_x+20, y+90, 220, 22, "기존기술 한계", 10.5, True, gray)
+    add_textbox(slide, inner_x+22, y+118, inner_w-44, 52, "\n".join(["• "+str(v) for v in data.get("limitations",[])[:2]]), 8.2, False, black)
+    add_rect(slide, inner_x, y+194, inner_w, 108, fill=sky2, outline=line, radius=True)
+    add_textbox(slide, inner_x+20, y+208, 220, 22, "기술적 우위", 10.5, True, secondary)
+    add_textbox(slide, inner_x+22, y+236, inner_w-44, 56, "\n".join(["▸ "+str(v) for v in data.get("technical_advantages",[])[:2]]), 8.2, False, primary)
 
-    # IP Status
-    y=1264; ip=normalize_ip(data.get("ip",{})); ip_h=220; ip_w=CW
-    add_rect(slide, X, y, ip_w, ip_h, fill=sky2, outline=line, radius=True)
-    add_textbox(slide, X+36, y+30, 260, 34, "지식재산권 현황", 14, True, primary)
-    table_x, table_y, table_w, table_h = X+28, y+72, ip_w-56, 132
+    # IP full width
+    y=1252; ip=normalize_ip(data.get("ip",{})); ip_h=220
+    add_rect(slide, X, y, CW, ip_h, fill=sky2, outline=line, radius=True)
+    add_textbox(slide, X+36, y+30, 260, 34, "지식재산권 현황", 15, True, primary)
+    table_x, table_y, table_w, table_h = X+28, y+72, CW-56, 132
     add_rect(slide, table_x, table_y, table_w, table_h, fill=(255,255,255), outline=line)
     add_rect(slide, table_x, table_y, table_w, 40, fill=table_header, outline=line)
     col1=int(table_w*0.45); col2=int(table_w*0.28); col3=table_w-col1-col2
     for xx in [table_x+col1, table_x+col1+col2]:
         shp=slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, px(xx), px(table_y), px(1), px(table_h))
         shp.fill.solid(); shp.fill.fore_color.rgb=RGBColor(*line); shp.line.fill.background()
-    add_textbox(slide, table_x+8, table_y+8, col1-16, 26, "발명의 명칭", 10, True, black, align=PP_ALIGN.CENTER)
-    add_textbox(slide, table_x+col1+8, table_y+3, col2-16, 34, "출원번호\n(등록번호)", 7.5, True, black, align=PP_ALIGN.CENTER)
-    add_textbox(slide, table_x+col1+col2+8, table_y+3, col3-16, 34, "출원일자\n(등록일자)", 7.5, True, black, align=PP_ALIGN.CENTER)
-    add_textbox(slide, table_x+12, table_y+50, col1-24, 54, ip["title"] or data.get("original_title",""), 6.8, False, black, align=PP_ALIGN.CENTER)
-    add_textbox(slide, table_x+col1+8, table_y+50, col2-16, 54, f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number'], 8.6, False, black, align=PP_ALIGN.CENTER)
-    add_textbox(slide, table_x+col1+col2+8, table_y+50, col3-16, 54, f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date'], 8.6, False, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, table_x+8, table_y+7, col1-16, 26, "발명의 명칭", 11, True, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, table_x+col1+8, table_y+3, col2-16, 34, "출원번호\n(등록번호)", 8.3, True, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, table_x+col1+col2+8, table_y+3, col3-16, 34, "출원일자\n(등록일자)", 8.3, True, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, table_x+12, table_y+48, col1-24, 56, ip["title"] or data.get("original_title",""), 8.4, False, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, table_x+col1+8, table_y+48, col2-16, 56, f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number'], 10, False, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, table_x+col1+col2+8, table_y+48, col3-16, 56, f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date'], 10, False, black, align=PP_ALIGN.CENTER)
 
     # Contact
-    y=1518
+    y=1504
     add_rect(slide, X, y, CW, 78, fill=(255,255,255), outline=line, radius=True)
-    add_textbox(slide, X+42, y+25, 100, 30, "문의처", 14, True, primary)
-    add_textbox(slide, X+160, y+29, CW-190, 28, contact, 9, False, black)
+    add_textbox(slide, X+42, y+24, 110, 30, "문의처", 15.5, True, primary)
+    add_textbox(slide, X+160, y+28, CW-190, 28, contact, 10, False, black)
 
     bio=BytesIO(); prs.save(bio); return bio.getvalue()
 
@@ -1359,6 +1645,7 @@ def build_data_from_edit_form(base: Dict[str, Any], university: str, department:
             "registration_date": vals.get("ip_registration_date", ""),
             "applicant": vals.get("ip_applicant", ""),
         },
+        "market_info": base.get("market_info", {}),
     }
 
 # -----------------------------------------------------
@@ -1416,6 +1703,9 @@ if generate_btn:
     with st.spinner("GPT로 SMK 텍스트 생성 중..."):
         data = analyze_patent_with_gpt(patent_text, university, department, professor)
         data["university"] = university; data["department"] = department; data["professor"] = professor
+
+    with st.spinner("시장현황 검색 및 그래프 구성 중..."):
+        data["market_info"] = generate_market_info_with_web(data)
         st.session_state.data = data
         st.session_state.edit_version += 1
 
@@ -1456,11 +1746,9 @@ else:
         st.image(st.session_state.brief_image, use_container_width=True)
         c1, c2 = st.columns(2)
         with c1:
-            filename_base = make_smk_filename_base(st.session_state.data or {})
-            st.download_button("PDF 다운로드", st.session_state.pdf_bytes, f"{filename_base}.pdf", "application/pdf", type="primary", use_container_width=True)
+            st.download_button("PDF 다운로드", st.session_state.pdf_bytes, build_export_basename(st.session_state.data)+".pdf", "application/pdf", type="primary", use_container_width=True)
         with c2:
-            filename_base = make_smk_filename_base(st.session_state.data or {})
-            st.download_button("PPTX 다운로드(수정용)", st.session_state.pptx_bytes, f"{filename_base}.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", use_container_width=True)
+            st.download_button("PPTX 다운로드(수정용)", st.session_state.pptx_bytes, build_export_basename(st.session_state.data)+".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", use_container_width=True)
 
     with col2:
         st.subheader("생성 텍스트 수정")
@@ -1509,6 +1797,8 @@ else:
             for i in range(2):
                 adv_vals.append(st.text_area(f"기술적 우위 {i+1}", value=adv_now[i], height=70, key=f"{k}_adv_{i}"))
 
+            st.caption("※ 적용분야를 수정하면 시장현황도 함께 재검색됩니다.")
+
             st.markdown("#### 지식재산권 현황")
             ip_title = st.text_input("발명의 명칭", value=ip_now.get("title", ""), key=f"{k}_ip_title")
             c_ip1, c_ip2 = st.columns(2)
@@ -1546,18 +1836,20 @@ else:
             for i, v in enumerate(adv_vals):
                 vals[f"adv_{i}"] = v
 
-            edited = build_data_from_edit_form(data_now, university, department, professor, vals)
-            contact = f"{org} {name} {position}  |  {phone}  |  {email}"
-            rep_img = st.session_state.rep_img or extract_representative_drawing(st.session_state.pdf_path)
-            university_logo = get_logo_image(university) if use_logos else None
-            pium_logo = get_pium_logo_image() if use_logos else None
-            piumlink_logo = get_piumlink_logo_image() if use_logos else None
-            brief = compose_tech_brief(edited, rep_img, st.session_state.app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img, piumlink_logo)
-            st.session_state.data = edited
-            st.session_state.brief_image = brief
-            st.session_state.pdf_bytes = make_pdf_bytes_from_image(brief)
-            st.session_state.pptx_bytes = make_pptx_bytes(edited, rep_img, st.session_state.app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img, piumlink_logo)
-            st.session_state.edit_version += 1
+            with st.spinner("수정 내용과 시장현황을 반영하는 중..."):
+                edited = build_data_from_edit_form(data_now, university, department, professor, vals)
+                edited["market_info"] = generate_market_info_with_web(edited)
+                contact = f"{org} {name} {position}  |  {phone}  |  {email}"
+                rep_img = st.session_state.rep_img or extract_representative_drawing(st.session_state.pdf_path)
+                university_logo = get_logo_image(university) if use_logos else None
+                pium_logo = get_pium_logo_image() if use_logos else None
+                piumlink_logo = get_piumlink_logo_image() if use_logos else None
+                brief = compose_tech_brief(edited, rep_img, st.session_state.app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img, piumlink_logo)
+                st.session_state.data = edited
+                st.session_state.brief_image = brief
+                st.session_state.pdf_bytes = make_pdf_bytes_from_image(brief)
+                st.session_state.pptx_bytes = make_pptx_bytes(edited, rep_img, st.session_state.app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img, piumlink_logo)
+                st.session_state.edit_version += 1
             st.success("수정 내용이 반영되었습니다.")
             st.rerun()
 
