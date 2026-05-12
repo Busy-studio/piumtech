@@ -1272,7 +1272,9 @@ def market_summary_text(info: Dict[str, Any]) -> str:
 
 def market_description_text(info: Dict[str, Any]) -> str:
     m = normalize_market_info(info)
-    market_name = m.get("market_name") or "관련 시장"
+    market_label = str(m.get("display_title") or m.get("market_name") or "관련 시장").strip()
+    market_label = market_label.replace("시장현황", "시장")
+    subject = market_label if market_label.startswith("글로벌 ") else f"글로벌 {market_label}"
     years, values, cagr, unit = build_market_series(m)
     if is_valid_market_info(m) and years:
         base_year = years[0]
@@ -1280,14 +1282,14 @@ def market_description_text(info: Dict[str, Any]) -> str:
         if values and unit and not str(unit).startswith("지수"):
             base_value = format_market_value(values[0], unit)
             end_value = format_market_value(values[-1], unit)
-            return f"글로벌 {market_name}은 {base_year}년 {base_value} {unit}에서 {end_year}년 {end_value} {unit} 규모로 확대될 전망이며, 연평균 성장률은 {cagr:.1f}%입니다."
-        return f"글로벌 {market_name}은 {base_year}년부터 {end_year}년까지 연평균 {cagr:.1f}% 성장할 것으로 전망됩니다."
+            return f"{subject}은 {base_year}년 {base_value} {unit}에서 {end_year}년 {end_value} {unit} 규모로 확대될 전망이며, 연평균 성장률은 {cagr:.1f}%입니다."
+        return f"{subject}은 {base_year}년부터 {end_year}년까지 연평균 {cagr:.1f}% 성장할 것으로 전망됩니다."
 
     summary = str(m.get("summary") or "").strip()
     if summary and _has_hangul(summary):
         return summary
     if has_market_graph_image(m):
-        return f"글로벌 {market_name}은 공개 시장자료 기준으로 성장 추이가 확인되는 분야입니다."
+        return f"{subject}은 공개 시장자료 기준으로 성장 추이가 확인되는 분야입니다."
     return "검증 가능한 글로벌 시장 데이터 확인이 필요합니다."
 
 def market_source_text(info: Dict[str, Any]) -> str:
@@ -1528,20 +1530,26 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
 
     market_info = normalize_market_info(data.get("market_info", {}))
     market_title = market_info.get("display_title") or market_info.get("market_name") or "글로벌 시장현황"
-    draw_fitted_wrapped(d, (market_x+18, app_y+74), market_title, 18, True, black, market_w-36, 30, line_gap=2, min_size=13, max_lines=1)
+    draw_fitted_wrapped(d, (market_x+18, app_y+74), market_title, 19, True, black, market_w-36, 30, line_gap=2, min_size=14, max_lines=1)
 
-    # 첨부 예시처럼 시장현황 영역 안에 그래프 + 한글 전망 문장 + 출처를 함께 배치
+    # 시장현황: 왼쪽 그래프 + 오른쪽 설명 카드 + 하단 출처
     chart, _market_visual_mode = get_market_visual(market_info, primary=primary, accent=accent)
-    chart_box_x, chart_box_y = market_x+18, app_y+104
-    chart_box_w, chart_box_h = market_w-36, 72
-    _draw_shadowed_card(d, (chart_box_x, chart_box_y, chart_box_x+chart_box_w, chart_box_y+chart_box_h), radius=10, fill=(255,255,255), outline=card_line, width=1, shadow=False)
-    chart_img = fit_image(chart, (chart_box_w-10, chart_box_h-8), bg=(255,255,255), trim=False)
-    im.paste(chart_img, (chart_box_x+5, chart_box_y+4))
+    graph_x, graph_y = market_x+18, app_y+106
+    graph_w, graph_h = 174, 98
+    _draw_shadowed_card(d, (graph_x, graph_y, graph_x+graph_w, graph_y+graph_h), radius=12, fill=(255,255,255), outline=card_line, width=1, shadow=False)
+    chart_img = fit_image(chart, (graph_w-10, graph_h-10), bg=(255,255,255), trim=False)
+    im.paste(chart_img, (graph_x+5, graph_y+5))
 
+    desc_x = graph_x + graph_w + 16
+    desc_y = app_y + 118
+    desc_w = market_x + market_w - 18 - desc_x
+    desc_h = 74
+    _draw_shadowed_card(d, (desc_x, desc_y, desc_x+desc_w, desc_y+desc_h), radius=16, fill=(255,255,255), outline=card_line, width=1, shadow=True)
     desc = market_description_text(market_info)
-    draw_fitted_wrapped(d, (market_x+18, app_y+184), desc, 14, False, black, market_w-36, 40, line_gap=3, min_size=10, max_lines=2)
+    draw_fitted_wrapped(d, (desc_x+14, desc_y+12), desc, 13, False, gray, desc_w-28, desc_h-18, line_gap=3, min_size=10, max_lines=4)
+
     source = market_source_text(market_info)
-    draw_fitted_wrapped(d, (market_x+18, app_y+228), source, 12, False, gray, market_w-36, 18, line_gap=2, min_size=9, max_lines=1)
+    draw_fitted_wrapped(d, (graph_x, app_y+216), source, 11, False, gray, market_w-36, 18, line_gap=2, min_size=8, max_lines=1)
 
     # Overview / Differentiation
     y = 582
@@ -1735,11 +1743,22 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
 
     market_info = normalize_market_info(data.get("market_info", {}))
     market_title = market_info.get("display_title") or market_info.get("market_name") or "글로벌 시장현황"
-    add_textbox(slide, market_x+18, app_y+74, market_w-36, 28, market_title, 10.8, True, black)
+    add_textbox(slide, market_x+18, app_y+74, market_w-36, 28, market_title, 11.2, True, black)
+
+    graph_x, graph_y = market_x+18, app_y+106
+    graph_w, graph_h = 174, 98
+    add_rect(slide, graph_x, graph_y, graph_w, graph_h, fill=(255,255,255), outline=line, radius=True)
     chart, _market_visual_mode = get_market_visual(market_info, primary=primary, accent=accent)
-    slide.shapes.add_picture(img_bytes(fit_image(chart, (market_w-36, 72), trim=False)), px(market_x+18), px(app_y+104), width=px(market_w-36), height=px(72))
-    add_textbox(slide, market_x+18, app_y+184, market_w-36, 40, market_description_text(market_info), 8.2, False, black)
-    add_textbox(slide, market_x+18, app_y+228, market_w-36, 18, market_source_text(market_info), 6.8, False, gray)
+    slide.shapes.add_picture(img_bytes(fit_image(chart, (graph_w-10, graph_h-10), trim=False)), px(graph_x+5), px(graph_y+5), width=px(graph_w-10), height=px(graph_h-10))
+
+    desc_x = graph_x + graph_w + 16
+    desc_y = app_y + 118
+    desc_w = market_x + market_w - 18 - desc_x
+    desc_h = 74
+    add_rect(slide, desc_x, desc_y, desc_w, desc_h, fill=(255,255,255), outline=line, radius=True)
+    add_textbox(slide, desc_x+12, desc_y+10, desc_w-24, desc_h-16, market_description_text(market_info), 7.9, False, gray)
+
+    add_textbox(slide, graph_x, app_y+216, market_w-36, 16, market_source_text(market_info), 6.6, False, gray)
 
     # Overview / Difference
     y=582; gap=30; box_w=(CW-gap)//2; box_h=290
