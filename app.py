@@ -1271,26 +1271,33 @@ def market_summary_text(info: Dict[str, Any]) -> str:
     return market_description_text(info)
 
 def market_description_text(info: Dict[str, Any]) -> str:
+    """시장현황 설명을 개조식·음슴체 스타일로 생성."""
     m = normalize_market_info(info)
-    market_label = str(m.get("display_title") or m.get("market_name") or "관련 시장").strip()
-    market_label = market_label.replace("시장현황", "시장")
-    subject = market_label if market_label.startswith("글로벌 ") else f"글로벌 {market_label}"
     years, values, cagr, unit = build_market_series(m)
+    lines = []
+
     if is_valid_market_info(m) and years:
         base_year = years[0]
         end_year = years[-1]
+        lines.append(f"• {base_year}~{end_year}년 연평균 {cagr:.1f}% 성장 전망")
         if values and unit and not str(unit).startswith("지수"):
-            base_value = format_market_value(values[0], unit)
             end_value = format_market_value(values[-1], unit)
-            return f"{subject}은 {base_year}년 {base_value} {unit}에서 {end_year}년 {end_value} {unit} 규모로 확대될 전망이며, 연평균 성장률은 {cagr:.1f}%입니다."
-        return f"{subject}은 {base_year}년부터 {end_year}년까지 연평균 {cagr:.1f}% 성장할 것으로 전망됩니다."
+            lines.append(f"• {end_year}년 시장규모 {end_value} {unit} 수준 전망")
+        else:
+            lines.append(f"• 중장기 시장 확대 지속 예상")
+        return "\n".join(lines)
 
     summary = str(m.get("summary") or "").strip()
     if summary and _has_hangul(summary):
-        return summary
+        summary = re.sub(r'[.]$', '', summary)
+        lines.append(f"• {summary}")
+        lines.append("• 세부 수치 출처 기준 확인 필요")
+        return "\n".join(lines)
+
     if has_market_graph_image(m):
-        return f"{subject}은 공개 시장자료 기준으로 성장 추이가 확인되는 분야입니다."
-    return "검증 가능한 글로벌 시장 데이터 확인이 필요합니다."
+        return "• 공개 시장자료 기준 성장 추이 확인됨\n• 세부 수치 출처 기준 확인 필요"
+
+    return "• 검증 가능한 글로벌 시장 데이터 확인 필요\n• 출처 확보 후 시장현황 반영 필요"
 
 def market_source_text(info: Dict[str, Any]) -> str:
     m = normalize_market_info(info)
