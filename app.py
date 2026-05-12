@@ -119,6 +119,118 @@ def label(lang: str, key: str) -> str:
 def has_hangul_text(s: str) -> bool:
     return bool(re.search(r"[가-힣]", str(s or "")))
 
+UNIVERSITY_TRANSLATIONS = {
+    "부산대학교": {"en": "Pusan National University", "zh": "釜山国立大学", "ja": "釜山大学"},
+    "국립부경대학교": {"en": "Pukyong National University", "zh": "国立釜庆大学", "ja": "国立釜慶大学"},
+    "국립한국해양대학교": {"en": "Korea Maritime & Ocean University", "zh": "国立韩国海洋大学", "ja": "国立韓国海洋大学"},
+    "동아대학교": {"en": "Dong-A University", "zh": "东亚大学", "ja": "東亜大学"},
+    "동의대학교": {"en": "Dong-Eui University", "zh": "东义大学", "ja": "東義大学"},
+    "동서대학교": {"en": "Dongseo University", "zh": "东西大学", "ja": "東西大学"},
+    "동명대학교": {"en": "Tongmyong University", "zh": "东明大学", "ja": "東明大学"},
+    "신라대학교": {"en": "Silla University", "zh": "新罗大学", "ja": "新羅大学"},
+    "울산대학교": {"en": "University of Ulsan", "zh": "蔚山大学", "ja": "蔚山大学"},
+    "경남대학교": {"en": "Kyungnam University", "zh": "庆南大学", "ja": "慶南大学"},
+    "경상국립대학교": {"en": "Gyeongsang National University", "zh": "庆尚国立大学", "ja": "慶尚国立大学"},
+    "국립창원대학교": {"en": "Changwon National University", "zh": "国立昌原大学", "ja": "国立昌原大学"},
+    "인제대학교": {"en": "Inje University", "zh": "仁济大学", "ja": "仁済大学"},
+}
+
+LANGUAGE_NAMES = {"ko": "Korean", "en": "English", "zh": "Simplified Chinese", "ja": "Japanese"}
+
+def get_display_university(university: str, lang: str) -> str:
+    lang = get_lang_code(lang)
+    if lang == "ko":
+        return str(university or "")
+    return UNIVERSITY_TRANSLATIONS.get(str(university or ""), {}).get(lang, str(university or ""))
+
+def convert_korean_date(text: str, lang: str) -> str:
+    """YYYY년MM월DD일 형식의 날짜를 선택 언어 형식으로 변환."""
+    lang = get_lang_code(lang)
+    s = str(text or "")
+    if not s:
+        return ""
+    months_en = ["", "Jan.", "Feb.", "Mar.", "Apr.", "May", "Jun.", "Jul.", "Aug.", "Sep.", "Oct.", "Nov.", "Dec."]
+    def repl(m):
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if lang == "en":
+            return f"{months_en[mo]} {d}, {y}"
+        if lang == "zh":
+            return f"{y}年{mo}月{d}日"
+        if lang == "ja":
+            return f"{y}年{mo}月{d}日"
+        return f"{y}년{mo:02d}월{d:02d}일"
+    return re.sub(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일", repl, s)
+
+def translate_terms_with_gpt(terms: Dict[str, str], lang: str, preserve_values: List[str] | None = None) -> Dict[str, str]:
+    """짧은 UI/메타데이터 문구를 선택 언어로 번역. preserve_values는 절대 번역하지 않음."""
+    lang = get_lang_code(lang)
+    if lang == "ko":
+        return {k: str(v or "") for k, v in terms.items()}
+    clean_terms = {k: str(v or "") for k, v in terms.items()}
+    if not any(v.strip() for v in clean_terms.values()):
+        return clean_terms
+    preserve_values = [str(v) for v in (preserve_values or []) if str(v).strip()]
+    try:
+        client = get_client()
+        prompt = f"""
+Translate the following SMK metadata fields into {LANGUAGE_NAMES.get(lang, lang)}.
+Rules:
+- Return JSON only with the same keys.
+- Do not translate or alter these exact names/strings if they appear: {preserve_values}
+- Translate university, department, organization, position, invention title, applicant and short labels naturally.
+- Keep patent numbers, phone numbers and emails unchanged.
+- Do not add explanations.
+
+Input JSON:
+{json.dumps(clean_terms, ensure_ascii=False)}
+"""
+        res = client.responses.create(model=TEXT_MODEL_FIXED, input=prompt, temperature=0.1)
+        parsed = safe_json_parse(res.output_text)
+        return {k: str(parsed.get(k, clean_terms.get(k, "")) or "") for k in clean_terms.keys()}
+    except Exception:
+        return clean_terms
+
+def localize_smk_data(data: Dict[str, Any], lang: str, university: str, department: str, professor: str) -> Dict[str, Any]:
+    """출력용 데이터 중 교수명만 보존하고 나머지 메타 필드를 선택 언어로 현지화."""
+    lang = get_lang_code(lang)
+    data = dict(data or {})
+    data["language"] = lang
+    ip = normalize_ip(data.get("ip", {}))
+    data["university_display"] = get_display_university(university or data.get("university", ""), lang)
+
+    terms = {
+        "department_display": department or data.get("department", ""),
+        "original_title": data.get("original_title", ""),
+        "ip_title": ip.get("title", ""),
+        "ip_applicant": ip.get("applicant", ""),
+    }
+    tr = translate_terms_with_gpt(terms, lang, preserve_values=[professor])
+    data["department_display"] = tr.get("department_display", terms["department_display"])
+    if tr.get("original_title"):
+        data["original_title"] = tr.get("original_title")
+    ip["title"] = tr.get("ip_title", ip.get("title", ""))
+    ip["applicant"] = tr.get("ip_applicant", ip.get("applicant", ""))
+    ip["application_date"] = convert_korean_date(ip.get("application_date", ""), lang)
+    ip["registration_date"] = convert_korean_date(ip.get("registration_date", ""), lang)
+    data["ip"] = ip
+    return data
+
+def build_contact_text(org: str, name: str, position: str, phone: str, email: str, lang: str) -> str:
+    """담당자 성명은 그대로 두고 기관/직책만 선택 언어로 현지화."""
+    lang = get_lang_code(lang)
+    if lang == "ko":
+        org_t, pos_t = str(org or ""), str(position or "")
+    else:
+        tr = translate_terms_with_gpt({"org": org, "position": position}, lang, preserve_values=[name])
+        org_t, pos_t = tr.get("org", str(org or "")), tr.get("position", str(position or ""))
+    left = " ".join([v for v in [org_t, str(name or ""), pos_t] if str(v).strip()])
+    parts = [left]
+    if str(phone or "").strip():
+        parts.append(str(phone).strip())
+    if str(email or "").strip():
+        parts.append(str(email).strip())
+    return "  |  ".join(parts)
+
 UNIVERSITIES = [
     "부산대학교", "국립부경대학교", "국립한국해양대학교", "동아대학교", "동의대학교", "동서대학교",
     "동명대학교", "신라대학교", "울산대학교", "경남대학교", "경상국립대학교", "국립창원대학교", "인제대학교", "수기입력"
@@ -140,11 +252,16 @@ def get_client() -> OpenAI:
 
 @st.cache_resource
 def load_font(size: int, bold: bool = False):
+    # CJK 전체(한국어/중국어/일본어)를 지원하는 폰트를 최우선 사용해 □ 깨짐을 방지한다.
     paths = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc" if bold else "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc" if bold else "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
         "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf" if bold else "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
         "/usr/share/fonts/truetype/nanum/NanumBarunGothicBold.ttf" if bold else "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf",
         "/usr/share/fonts/truetype/nanum/NanumSquareB.ttf" if bold else "/usr/share/fonts/truetype/nanum/NanumSquareR.ttf",
         "/Library/Fonts/AppleGothic.ttf",
+        "C:/Windows/Fonts/msyhbd.ttc" if bold else "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/YuGothB.ttc" if bold else "C:/Windows/Fonts/YuGothR.ttc",
         "C:/Windows/Fonts/malgunbd.ttf" if bold else "C:/Windows/Fonts/malgun.ttf",
     ]
     for p in paths:
@@ -1336,6 +1453,9 @@ JSON 형식:
             parsed["display_title"] = rep_market.get("display_title") or f"글로벌 {default_market_name} 시장"
 
         parsed["verified"] = bool(parsed.get("verified")) and is_valid_market_info(parsed)
+        # 화면에 표시되는 출처명도 선택 언어로 맞춘다. URL/숫자는 그대로 유지.
+        if lang != "en" and parsed.get("source_title"):
+            parsed["source_title"] = translate_terms_with_gpt({"source_title": parsed.get("source_title", "")}, lang).get("source_title", parsed.get("source_title", ""))
         if not parsed["verified"] and not has_market_graph_image(parsed):
             parsed["error"] = "검증된 수치 또는 활용 가능한 공개 그래프 이미지를 찾지 못했습니다."
         return parsed
@@ -1668,7 +1788,7 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
 
     uni_logo_size = 124
     uni_logo_x, uni_logo_y = 28, 24
-    left_logo = make_transparent_logo_canvas(university_logo, size=(uni_logo_size, uni_logo_size), padding=0) if university_logo else make_university_logo_box(None, data.get('university',''), size=(uni_logo_size, uni_logo_size), bg=uni_pale, primary=uni_primary)
+    left_logo = make_transparent_logo_canvas(university_logo, size=(uni_logo_size, uni_logo_size), padding=0) if university_logo else make_university_logo_box(None, data.get('university_display') or data.get('university',''), size=(uni_logo_size, uni_logo_size), bg=uni_pale, primary=uni_primary)
     im.paste(left_logo, (uni_logo_x, uni_logo_y), left_logo if left_logo.mode == 'RGBA' else None)
 
     right_x = W - 172
@@ -1684,7 +1804,7 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     header_x = 190
     header_w = right_x - header_x - 22
     prof_suffix = label(lang, "prof_suffix")
-    kicker = f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} {prof_suffix}"
+    kicker = f"PIUM Tech Offer  x  {data.get('university_display') or data.get('university','')}  |  {data.get('department_display') or data.get('department','')}  |  {data.get('professor','')} {prof_suffix}"
     draw_fitted_wrapped(d, (header_x, 54), kicker, 25, False, uni_primary, header_w, 32, line_gap=2, min_size=17, max_lines=1)
     draw_fitted_wrapped(d, (header_x, 92), data.get("marketing_title", "기술명"), 44, True, uni_primary, header_w, 82, line_gap=3, min_size=29, max_lines=2)
 
@@ -1906,7 +2026,7 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
 
     add_rect(slide, 0, 0, 1240, 248, fill=uni_pale, outline=uni_pale)
     uni_logo_size = 124
-    left_logo = make_transparent_logo_canvas(university_logo, size=(uni_logo_size, uni_logo_size), padding=0) if university_logo else make_university_logo_box(None, data.get('university',''), size=(uni_logo_size, uni_logo_size), bg=uni_pale, primary=uni_primary)
+    left_logo = make_transparent_logo_canvas(university_logo, size=(uni_logo_size, uni_logo_size), padding=0) if university_logo else make_university_logo_box(None, data.get('university_display') or data.get('university',''), size=(uni_logo_size, uni_logo_size), bg=uni_pale, primary=uni_primary)
     slide.shapes.add_picture(img_bytes(left_logo), px(28), px(24), width=px(uni_logo_size), height=px(uni_logo_size))
 
     right_x = 1240 - 172
@@ -1921,7 +2041,7 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     header_x = 190
     header_w = right_x - header_x - 22
     prof_suffix = label(lang, "prof_suffix")
-    add_textbox(slide, header_x, 54, header_w, 30, f"PIUM Tech Offer  x  {data.get('university','')}  |  {data.get('department','')}  |  {data.get('professor','')} {prof_suffix}", 13.5, False, uni_primary)
+    add_textbox(slide, header_x, 54, header_w, 30, f"PIUM Tech Offer  x  {data.get('university_display') or data.get('university','')}  |  {data.get('department_display') or data.get('department','')}  |  {data.get('professor','')} {prof_suffix}", 13.5, False, uni_primary)
     add_textbox(slide, header_x, 92, header_w, 78, data.get("marketing_title", ""), 25, True, uni_primary)
     add_rect(slide, header_x, 176, 820, 48, fill=(255,255,255), outline=uni_line, radius=True)
     add_textbox(slide, header_x+22, 188, 776, 26, data.get("subtitle", ""), 11.5, False, gray)
@@ -2114,6 +2234,7 @@ if generate_btn:
     with st.spinner("GPT로 SMK 텍스트 생성 중..."):
         data = analyze_patent_with_gpt(patent_text, university, department, professor, output_language)
         data["university"] = university; data["department"] = department; data["professor"] = professor; data["language"] = output_language
+        data = localize_smk_data(data, output_language, university, department, professor)
 
     with st.spinner("시장현황 검색 및 그래프 구성 중..."):
         data["market_info"] = generate_market_info_with_web(data)
@@ -2139,7 +2260,7 @@ if generate_btn:
     st.session_state.app_imgs = app_imgs
 
     with st.spinner("PDF/PPTX 구성 중..."):
-        contact = f"{org} {name} {position}  |  {phone}  |  {email}"
+        contact = build_contact_text(org, name, position, phone, email, output_language)
         university_logo = get_logo_image(university) if use_logos else None
         pium_logo = get_pium_logo_image() if use_logos else None
         piumlink_logo = get_piumlink_logo_image() if use_logos else None
@@ -2250,8 +2371,9 @@ else:
             with st.spinner("수정 내용과 시장현황을 반영하는 중..."):
                 edited = build_data_from_edit_form(data_now, university, department, professor, vals)
                 edited["language"] = output_language
+                edited = localize_smk_data(edited, output_language, university, department, professor)
                 edited["market_info"] = generate_market_info_with_web(edited)
-                contact = f"{org} {name} {position}  |  {phone}  |  {email}"
+                contact = build_contact_text(org, name, position, phone, email, output_language)
                 rep_img = st.session_state.rep_img or extract_representative_drawing(st.session_state.pdf_path)
                 university_logo = get_logo_image(university) if use_logos else None
                 pium_logo = get_pium_logo_image() if use_logos else None
