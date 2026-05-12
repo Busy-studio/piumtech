@@ -1667,6 +1667,41 @@ def draw_fitted_wrapped(draw, xy, text, size, bold, fill, max_width, max_height,
         yy += min_size + line_gap
     return yy
 
+def draw_fitted_centered_wrapped(draw, box, text, size, bold, fill, line_gap=4, min_size=12, max_lines=2):
+    """박스 안에서 자동 축소 + 중앙 정렬로 텍스트를 배치한다."""
+    x1, y1, x2, y2 = box
+    max_width = x2 - x1
+    max_height = y2 - y1
+    text = str(text or "")
+    for fs in range(size, min_size-1, -1):
+        font = load_font(fs, bold)
+        lines = wrap_text(draw, text, font, max_width, max_lines=max_lines)
+        total_h = len(lines) * fs + max(0, len(lines)-1) * line_gap
+        if total_h <= max_height:
+            yy = y1 + max(0, (max_height - total_h)//2)
+            raw_line_count = len(wrap_text(draw, text, font, max_width))
+            for i, line in enumerate(lines):
+                if max_lines and i == max_lines-1 and raw_line_count > max_lines:
+                    line = line[:-1] + "…" if len(line) > 1 else "…"
+                bbox = draw.textbbox((0, 0), line, font=font)
+                tw = bbox[2] - bbox[0]
+                draw.text((x1 + max(0, (max_width - tw)//2), yy), line, font=font, fill=fill)
+                yy += fs + line_gap
+            return yy
+    font = load_font(min_size, bold)
+    lines = wrap_text(draw, text, font, max_width, max_lines=max_lines)
+    yy = y1 + 2
+    for i, line in enumerate(lines):
+        if yy > y2 - min_size:
+            break
+        if i == len(lines)-1:
+            line = line[:-1] + "…" if len(line) > 1 else "…"
+        bbox = draw.textbbox((0, 0), line, font=font)
+        tw = bbox[2] - bbox[0]
+        draw.text((x1 + max(0, (max_width - tw)//2), yy), line, font=font, fill=fill)
+        yy += min_size + line_gap
+    return yy
+
 def draw_bullets_fit(draw, x, y, items, size, bold, color, max_width, max_height, bullet="›", line_gap=5, item_gap=8, min_size=12, max_lines_per_item=3):
     """불릿 목록이 지정 영역을 넘지 않도록 자동 축소."""
     items = [str(v).strip() for v in (items or []) if str(v).strip()]
@@ -1808,9 +1843,9 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     draw_fitted_wrapped(d, (header_x, 54), kicker, 25, False, uni_primary, header_w, 32, line_gap=2, min_size=17, max_lines=1)
     draw_fitted_wrapped(d, (header_x, 92), data.get("marketing_title", "기술명"), 44, True, uni_primary, header_w, 82, line_gap=3, min_size=29, max_lines=2)
 
-    sub_x, sub_y, sub_w, sub_h = header_x, 176, 820, 48
+    sub_x, sub_y, sub_w, sub_h = header_x, 174, 820, 54
     _draw_shadowed_card(d, (sub_x, sub_y, sub_x+sub_w, sub_y+sub_h), radius=12, fill=(255,255,255), outline=uni_line, width=1, shadow=True)
-    draw_fitted_wrapped(d, (sub_x+22, sub_y+11), data.get("subtitle", ""), 21, False, gray, sub_w-44, sub_h-14, line_gap=3, min_size=15, max_lines=1)
+    draw_fitted_centered_wrapped(d, (sub_x+22, sub_y+7, sub_x+sub_w-22, sub_y+sub_h-7), data.get("subtitle", ""), 20, False, gray, line_gap=3, min_size=12, max_lines=2)
 
     X = 28
     CW = W - 56
@@ -1910,7 +1945,7 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
 
     _draw_shadowed_card(d, (inner_x, sub2_y, inner_x+inner_w, sub2_y+sub2_h), radius=16, fill=sky2, outline=card_line, width=1, shadow=True)
     d.text((inner_x+20, sub2_y+14), label(lang, "advantages"), font=load_font(19, True), fill=secondary)
-    draw_bullets_fit(d, inner_x+22, sub2_y+42, data.get("technical_advantages", [])[:2], 14, False, primary, inner_w-44, sub2_h-48, bullet="▸", line_gap=3, item_gap=2, min_size=11, max_lines_per_item=2)
+    draw_bullets_fit(d, inner_x+22, sub2_y+42, data.get("technical_advantages", [])[:2], 14, False, primary, inner_w-44, sub2_h-48, bullet="•", line_gap=3, item_gap=2, min_size=11, max_lines_per_item=2)
 
     # IP full width
     y = 1252
@@ -1987,7 +2022,7 @@ def add_textbox(slide, x, y, w, h, text, size=14, bold=False, color=(30,30,30), 
     p.space_after = Pt(0)
     run = p.add_run()
     run.text = str(text)
-    run.font.name = "Malgun Gothic"
+    run.font.name = "Noto Sans CJK KR"
     run.font.size = Pt(size)
     run.font.bold = bold
     run.font.color.rgb = RGBColor(*color)
@@ -2043,8 +2078,8 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     prof_suffix = label(lang, "prof_suffix")
     add_textbox(slide, header_x, 54, header_w, 30, f"PIUM Tech Offer  x  {data.get('university_display') or data.get('university','')}  |  {data.get('department_display') or data.get('department','')}  |  {data.get('professor','')} {prof_suffix}", 13.5, False, uni_primary)
     add_textbox(slide, header_x, 92, header_w, 78, data.get("marketing_title", ""), 25, True, uni_primary)
-    add_rect(slide, header_x, 176, 820, 48, fill=(255,255,255), outline=uni_line, radius=True)
-    add_textbox(slide, header_x+22, 188, 776, 26, data.get("subtitle", ""), 11.5, False, gray)
+    add_rect(slide, header_x, 174, 820, 54, fill=(255,255,255), outline=uni_line, radius=True)
+    add_textbox(slide, header_x+22, 181, 776, 40, data.get("subtitle", ""), 10.8, False, gray, align=PP_ALIGN.CENTER)
 
     X = 28; CW = 1184
 
