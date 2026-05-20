@@ -1926,9 +1926,13 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
         max_lines=3,
     )
 
-    sub_x, sub_y, sub_w, sub_h = header_x, 198, 820, 54
-    _draw_shadowed_card(d, (sub_x, sub_y, sub_x+sub_w, sub_y+sub_h), radius=12, fill=(255,255,255), outline=uni_line, width=1, shadow=True)
-    draw_fitted_centered_wrapped(d, (sub_x+22, sub_y+7, sub_x+sub_w-22, sub_y+sub_h-7), data.get("subtitle", ""), 20, False, gray, line_gap=3, min_size=12, max_lines=2)
+    # 서브카피는 입력창/버튼처럼 보이지 않도록 흰 박스 대신 soft caption bar로 처리
+    sub_x, sub_y, sub_w, sub_h = header_x, 202, 820, 46
+    sub_fill = mix(uni_primary, (255,255,255), 0.90)
+    sub_outline = mix(uni_primary, (255,255,255), 0.78)
+    sub_text = ensure_dark(mix(uni_primary, black, 0.35))
+    d.rounded_rectangle((sub_x, sub_y, sub_x+sub_w, sub_y+sub_h), radius=12, fill=sub_fill, outline=sub_outline, width=1)
+    draw_fitted_centered_wrapped(d, (sub_x+20, sub_y+6, sub_x+sub_w-20, sub_y+sub_h-6), data.get("subtitle", ""), 19, False, sub_text, line_gap=2, min_size=12, max_lines=2)
 
     X = 28
     CW = W - 56
@@ -2168,8 +2172,11 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     prof_suffix = label(lang, "prof_suffix")
     add_textbox(slide, header_x, 42, header_w, 30, f"PIUM Tech Offer  x  {data.get('university_display') or data.get('university','')}  |  {data.get('department_display') or data.get('department','')}  |  {data.get('professor','')} {prof_suffix}", 13.5, False, uni_primary)
     add_textbox(slide, header_x, 78, header_w, 108, data.get("marketing_title", ""), 24, True, uni_primary)
-    add_rect(slide, header_x, 198, 820, 54, fill=(255,255,255), outline=uni_line, radius=True)
-    add_textbox(slide, header_x+22, 205, 776, 40, data.get("subtitle", ""), 10.8, False, gray, align=PP_ALIGN.CENTER)
+    sub_fill = mix(uni_primary, (255,255,255), 0.90)
+    sub_outline = mix(uni_primary, (255,255,255), 0.78)
+    sub_text = ensure_dark(mix(uni_primary, black, 0.35))
+    add_rect(slide, header_x, 202, 820, 46, fill=sub_fill, outline=sub_outline, radius=True)
+    add_textbox(slide, header_x+20, 208, 780, 30, data.get("subtitle", ""), 10.6, False, sub_text, align=PP_ALIGN.CENTER)
 
     X = 28; CW = 1184
 
