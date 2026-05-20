@@ -1884,18 +1884,31 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     left_logo = make_transparent_logo_canvas(university_logo, size=(uni_logo_size, uni_logo_size), padding=0) if university_logo else make_university_logo_box(None, data.get('university_display') or data.get('university',''), size=(uni_logo_size, uni_logo_size), bg=uni_pale, primary=uni_primary)
     im.paste(left_logo, (uni_logo_x, uni_logo_y), left_logo if left_logo.mode == 'RGBA' else None)
 
-    right_x = W - 172
-    top_y = 28
+    # PIUM 로고/QR은 원본 컬러를 보존해야 하므로, 대학색 헤더와 직접 섞이지 않게
+    # 흰색 독립 카드 안에 배치한다. 어떤 대학 대표색이 와도 브랜드 충돌을 줄이는 보호 영역.
+    right_card_x, right_card_y = W - 178, 18
+    right_card_w, right_card_h = 148, 220
+    _draw_shadowed_card(
+        d,
+        (right_card_x, right_card_y, right_card_x + right_card_w, right_card_y + right_card_h),
+        radius=18,
+        fill=(255, 255, 255),
+        outline=uni_line,
+        width=1,
+        shadow=True,
+    )
+    right_x = right_card_x + 10
+    top_y = right_card_y + 14
     if pium_logo is not None:
-        pium_canvas = make_transparent_logo_canvas(pium_logo, size=(145, 54), padding=0)
-        im.paste(pium_canvas, (right_x+2, top_y), pium_canvas)
+        pium_canvas = make_transparent_logo_canvas(pium_logo, size=(128, 48), padding=0)
+        im.paste(pium_canvas, (right_x, top_y), pium_canvas)
     if piumlink_logo is not None:
-        link_size = 116
+        link_size = 112
         link = make_transparent_logo_canvas(piumlink_logo, size=(link_size, link_size), padding=0)
-        im.paste(link, (right_x+18, top_y+66), link)
+        im.paste(link, (right_card_x + (right_card_w - link_size)//2, top_y + 60), link)
 
     header_x = 190
-    header_w = right_x - header_x - 22
+    header_w = right_card_x - header_x - 24
     prof_suffix = label(lang, "prof_suffix")
     kicker = f"PIUM Tech Offer  x  {data.get('university_display') or data.get('university','')}  |  {data.get('department_display') or data.get('department','')}  |  {data.get('professor','')} {prof_suffix}"
     draw_fitted_wrapped(d, (header_x, 42), kicker, 25, False, uni_primary, header_w, 32, line_gap=2, min_size=17, max_lines=1)
@@ -2135,17 +2148,23 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     left_logo = make_transparent_logo_canvas(university_logo, size=(uni_logo_size, uni_logo_size), padding=0) if university_logo else make_university_logo_box(None, data.get('university_display') or data.get('university',''), size=(uni_logo_size, uni_logo_size), bg=uni_pale, primary=uni_primary)
     slide.shapes.add_picture(img_bytes(left_logo), px(28), px(24), width=px(uni_logo_size), height=px(uni_logo_size))
 
-    right_x = 1240 - 172
-    top_y = 28
+    # PIUM 로고/QR 보호 카드: 원본 로고 컬러는 유지하고, 대학색 헤더와는 시각적으로 분리
+    right_card_x, right_card_y = 1240 - 178, 18
+    right_card_w, right_card_h = 148, 220
+    add_rect(slide, right_card_x + 5, right_card_y + 5, right_card_w, right_card_h, fill=mix(uni_line, (255,255,255), 0.55), outline=mix(uni_line, (255,255,255), 0.55), radius=True)
+    add_rect(slide, right_card_x, right_card_y, right_card_w, right_card_h, fill=(255,255,255), outline=uni_line, radius=True)
+    right_x = right_card_x + 10
+    top_y = right_card_y + 14
     if pium_logo is not None:
-        pium_canvas = make_transparent_logo_canvas(pium_logo, size=(145, 54), padding=0)
-        slide.shapes.add_picture(img_bytes(pium_canvas), px(right_x+2), px(top_y), width=px(145), height=px(54))
+        pium_canvas = make_transparent_logo_canvas(pium_logo, size=(128, 48), padding=0)
+        slide.shapes.add_picture(img_bytes(pium_canvas), px(right_x), px(top_y), width=px(128), height=px(48))
     if piumlink_logo is not None:
-        link = make_transparent_logo_canvas(piumlink_logo, size=(116,116), padding=0)
-        slide.shapes.add_picture(img_bytes(link), px(right_x+18), px(top_y+66), width=px(116), height=px(116))
+        link_size = 112
+        link = make_transparent_logo_canvas(piumlink_logo, size=(link_size,link_size), padding=0)
+        slide.shapes.add_picture(img_bytes(link), px(right_card_x + (right_card_w-link_size)//2), px(top_y+60), width=px(link_size), height=px(link_size))
 
     header_x = 190
-    header_w = right_x - header_x - 22
+    header_w = right_card_x - header_x - 24
     prof_suffix = label(lang, "prof_suffix")
     add_textbox(slide, header_x, 42, header_w, 30, f"PIUM Tech Offer  x  {data.get('university_display') or data.get('university','')}  |  {data.get('department_display') or data.get('department','')}  |  {data.get('professor','')} {prof_suffix}", 13.5, False, uni_primary)
     add_textbox(slide, header_x, 78, header_w, 108, data.get("marketing_title", ""), 24, True, uni_primary)
