@@ -2105,184 +2105,194 @@ def compose_infographic_brief(
     qr_img: Image.Image | None = None,
     piumlink_logo: Image.Image | None = None,
 ) -> Image.Image:
-    """기존 SMK의 정보 구조와 컬러는 유지하되, 인포그래픽용으로 재배치한 고품질 렌더러."""
-    scale = 1.35
-    S = lambda v: int(round(v * scale))
-    W, H = S(1240), S(1754)
-    im = Image.new("RGB", (W, H), (248, 250, 252))
+    """기본 SMK의 구조는 유지하되, 보다 고급스러운 카드/여백/배경으로 정제한 인포그래픽 렌더러."""
+    W, H = 1240, 1754
+    im = Image.new("RGB", (W, H), (246, 248, 251))
     d = ImageDraw.Draw(im)
 
     pal = get_visual_palette(university_logo)
     uni_primary = pal["uni_primary"]
-    uni_pale = mix(pal["uni_pale"], (255,255,255), 0.15)
-    uni_line = pal["uni_line"]
+    uni_pale = mix(pal["uni_pale"], (255,255,255), 0.08)
+    uni_line = mix(pal["uni_line"], (255,255,255), 0.18)
     primary = pal["pium_blue"]
     secondary = pal["tech_blue"]
     accent = pal["tech_cyan"]
-    sky = mix(pal["tech_pale"], (255,255,255), 0.18)
-    sky2 = mix(pal["tech_pale2"], (255,255,255), 0.08)
-    line = pal["tech_line"]
-    table_header = mix(pal["table_header"], (255,255,255), 0.06)
+    sky = mix(pal["tech_pale"], (255,255,255), 0.20)
+    sky2 = mix(pal["tech_pale2"], (255,255,255), 0.10)
+    line = mix(pal["tech_line"], (190,200,214), 0.14)
+    table_header = mix(pal["table_header"], (255,255,255), 0.04)
     black = pal["black"]
     gray = pal["gray"]
     lang = get_lang_code(data.get("language", "ko"))
 
-    d.rectangle((0, 0, W, H), fill=(248, 250, 252))
-
-    # Header
-    header_h = S(300)
+    # background and header
+    d.rectangle((0, 0, W, H), fill=(246,248,251))
+    header_h = 280
     d.rectangle((0, 0, W, header_h), fill=uni_pale)
-    d.rectangle((0, header_h - S(12), W, header_h), fill=mix(uni_primary, (255,255,255), 0.75))
+    # subtle top-to-bottom layered feel without randomness
+    d.rectangle((0, header_h-8, W, header_h), fill=mix(uni_primary, (255,255,255), 0.78))
+    d.line((0, header_h, W, header_h), fill=mix(line, (150,160,170), 0.18), width=2)
 
-    uni_logo_size = S(124)
+    # logos
+    uni_logo_size = 124
+    uni_logo_x, uni_logo_y = 28, 24
     left_logo = make_transparent_logo_canvas(university_logo, size=(uni_logo_size, uni_logo_size), padding=0) if university_logo else make_university_logo_box(None, data.get('university_display') or data.get('university',''), size=(uni_logo_size, uni_logo_size), bg=uni_pale, primary=uni_primary)
-    im.paste(left_logo, (S(36), S(24)), left_logo if left_logo.mode == 'RGBA' else None)
+    im.paste(left_logo, (uni_logo_x, uni_logo_y), left_logo if left_logo.mode == 'RGBA' else None)
 
-    right_card_x, right_card_y = W - S(176), S(18)
-    right_card_w, right_card_h = S(148), S(220)
-    _draw_shadowed_card(d, (right_card_x, right_card_y, right_card_x + right_card_w, right_card_y + right_card_h), radius=S(18), fill=(255,255,255), outline=uni_line, width=max(1,S(1)), shadow=True)
+    right_card_x, right_card_y = W - 178, 18
+    right_card_w, right_card_h = 148, 220
+    _draw_shadowed_card(d, (right_card_x, right_card_y, right_card_x+right_card_w, right_card_y+right_card_h), radius=18, fill=(255,255,255), outline=uni_line, width=1, shadow=True)
     if pium_logo is not None:
-        pium_canvas = make_transparent_logo_canvas(pium_logo, size=(S(128), S(48)), padding=0)
-        im.paste(pium_canvas, (right_card_x + S(10), right_card_y + S(14)), pium_canvas)
+        pium_canvas = make_transparent_logo_canvas(pium_logo, size=(128, 48), padding=0)
+        im.paste(pium_canvas, (right_card_x+10, right_card_y+14), pium_canvas)
     if piumlink_logo is not None:
-        link_size = S(112)
+        link_size = 112
         link = make_transparent_logo_canvas(piumlink_logo, size=(link_size, link_size), padding=0)
-        im.paste(link, (right_card_x + (right_card_w - link_size)//2, right_card_y + S(74)), link)
+        im.paste(link, (right_card_x + (right_card_w-link_size)//2, right_card_y+74), link)
 
-    header_x = S(188)
-    header_w = right_card_x - header_x - S(30)
+    header_x = 190
+    header_w = right_card_x - header_x - 24
     prof_suffix = label(lang, "prof_suffix")
     kicker = f"PIUM Tech Offer x {data.get('university_display') or data.get('university','')} | {data.get('department_display') or data.get('department','')} | {data.get('professor','')} {prof_suffix}"
-    draw_fitted_wrapped(d, (header_x, S(36)), kicker, S(17), False, ensure_dark(mix(uni_primary, black, 0.10)), header_w, S(28), line_gap=2, min_size=S(11), max_lines=1)
-    draw_fitted_wrapped(d, (header_x, S(76)), data.get("marketing_title", "기술명"), S(38), True, uni_primary, header_w, S(116), line_gap=S(3), min_size=S(24), max_lines=3)
+    draw_fitted_wrapped(d, (header_x, 42), kicker, 22, False, ensure_dark(mix(uni_primary, black, 0.10)), header_w, 28, line_gap=2, min_size=15, max_lines=1)
+    draw_fitted_wrapped(d, (header_x, 76), data.get("marketing_title", "기술명"), 41, True, uni_primary, header_w, 112, line_gap=4, min_size=24, max_lines=3)
     subtitle = (data.get("subtitle", "") or "").strip()
     if subtitle:
         subtitle_color = ensure_dark(mix(uni_primary, black, 0.35))
-        draw_fitted_wrapped(d, (header_x, S(198)), f"- {subtitle}", S(18), False, subtitle_color, header_w, S(32), line_gap=2, min_size=S(12), max_lines=2)
+        draw_fitted_wrapped(d, (header_x, 202), f"- {subtitle}", 18, False, subtitle_color, header_w, 32, line_gap=2, min_size=12, max_lines=2)
 
-    # Shared card geometry
-    X = S(28)
-    CW = W - S(56)
-    gap = S(28)
-    sec_font = load_font(S(24), True)
-    card_line = mix(line, (180, 190, 205), 0.10)
+    X = 28
+    CW = W - 56
+    gap = 30
+    sec_font = load_font(26, True)
+    card_line = line
 
-    # Applications / Market
-    app_y, app_h = S(324), S(280)
-    app_card_w = int(CW * 0.46)
+    # Applications + Market
+    app_y, app_h = 294, 262
+    app_card_w = 552
     market_x = X + app_card_w + gap
     market_w = CW - app_card_w - gap
-    _draw_shadowed_card(d, (X, app_y, X+app_card_w, app_y+app_h), radius=S(28), fill=(255,255,255), outline=card_line, width=max(1,S(2)), shadow=True)
-    _draw_shadowed_card(d, (market_x, app_y, market_x+market_w, app_y+app_h), radius=S(28), fill=(255,255,255), outline=card_line, width=max(1,S(2)), shadow=True)
-    draw_section_title(d, X+S(28), app_y+S(24), label(lang, "apps"), sec_font, primary)
-    draw_section_title(d, market_x+S(28), app_y+S(24), label(lang, "market"), sec_font, primary)
+    _draw_shadowed_card(d, (X, app_y, X+app_card_w, app_y+app_h), radius=30, fill=(255,255,255), outline=card_line, width=2, shadow=True)
+    _draw_shadowed_card(d, (market_x, app_y, market_x+market_w, app_y+app_h), radius=30, fill=(255,255,255), outline=card_line, width=2, shadow=True)
+    draw_section_title(d, X+30, app_y+26, label(lang, "apps"), sec_font, primary)
+    draw_section_title(d, market_x+30, app_y+26, label(lang, "market"), sec_font, primary)
+
+    # subtle inner title zone under section headers for premium feel
+    d.rounded_rectangle((X+22, app_y+66, X+app_card_w-22, app_y+app_h-18), radius=24, fill=mix((255,255,255), sky, 0.06), outline=None)
+    d.rounded_rectangle((market_x+22, app_y+66, market_x+market_w-22, app_y+app_h-18), radius=24, fill=mix((255,255,255), sky2, 0.10), outline=None)
 
     apps = data.get("applications", [])[:3]
-    app_inner_x = X + S(20)
-    app_inner_w = app_card_w - S(40)
-    col_gap = S(6)
+    app_inner_x = X + 22
+    app_inner_w = app_card_w - 44
+    col_gap = 4
     col_w = (app_inner_w - col_gap*2) // 3
-    icon_size = (S(118), S(96))
-    icon_y = app_y + S(84)
+    icon_size = (112, 88)
+    icon_y = app_y + 86
     for i in range(3):
         col_x = app_inner_x + i*(col_w + col_gap)
         if i > 0:
             sep_x = col_x - col_gap//2
-            d.line((sep_x, app_y+S(84), sep_x, app_y+app_h-S(40)), fill=mix(card_line, (255,255,255), 0.24), width=max(1,S(1)))
+            d.line((sep_x, app_y+84, sep_x, app_y+204), fill=mix(card_line, (255,255,255), 0.30), width=1)
         if i < len(app_imgs):
             icon = fit_image(app_imgs[i], icon_size, bg=(255,255,255), trim=True)
             im.paste(icon, (col_x + (col_w-icon_size[0])//2, icon_y))
         app = apps[i] if i < len(apps) else {"name":""}
-        draw_centered_wrapped(d, (col_x+S(4), app_y+S(188), col_x+col_w-S(4), app_y+S(246)), app.get("name", ""), load_font(S(18), True), black, max_lines=2, line_gap=3)
+        draw_centered_wrapped(d, (col_x+6, app_y+176, col_x+col_w-6, app_y+228), app.get("name", ""), load_font(19, True), black, max_lines=2, line_gap=3)
 
     market_info = normalize_market_info(data.get("market_info", {}))
     market_title = market_info.get("display_title") or market_info.get("market_name") or label(lang, "market_default")
-    draw_fitted_wrapped(d, (market_x+S(28), app_y+S(70)), market_title, S(18), True, black, market_w-S(56), S(30), line_gap=2, min_size=S(12), max_lines=1)
+    draw_fitted_wrapped(d, (market_x+34, app_y+74), market_title, 19, True, black, market_w-68, 28, line_gap=2, min_size=14, max_lines=1)
     chart, _mode = get_market_visual(market_info, primary=primary, accent=accent)
-    graph_x, graph_y = market_x+S(28), app_y+S(100)
-    graph_w, graph_h = S(186), S(110)
-    _draw_shadowed_card(d, (graph_x, graph_y, graph_x+graph_w, graph_y+graph_h), radius=S(12), fill=(255,255,255), outline=card_line, width=max(1,S(1)), shadow=False)
-    chart_img = fit_image(chart, (graph_w-S(10), graph_h-S(10)), bg=(255,255,255), trim=False)
-    im.paste(chart_img, (graph_x+S(5), graph_y+S(5)))
-    desc_x = graph_x + graph_w + S(18)
-    desc_y = app_y + S(108)
-    desc_w = market_x + market_w - S(24) - desc_x
-    desc_h = S(84)
-    _draw_shadowed_card(d, (desc_x, desc_y, desc_x+desc_w, desc_y+desc_h), radius=S(16), fill=sky2, outline=card_line, width=max(1,S(1)), shadow=True)
-    draw_fitted_wrapped(d, (desc_x+S(14), desc_y+S(12)), market_description_text(market_info), S(13), False, gray, desc_w-S(28), desc_h-S(18), line_gap=3, min_size=S(9), max_lines=4)
-    draw_fitted_wrapped(d, (graph_x, app_y+app_h-S(34)), market_source_text(market_info), S(10), False, gray, market_w-S(40), S(18), line_gap=2, min_size=S(8), max_lines=1)
+    graph_x, graph_y = market_x+34, app_y+104
+    graph_w, graph_h = 178, 104
+    _draw_shadowed_card(d, (graph_x, graph_y, graph_x+graph_w, graph_y+graph_h), radius=14, fill=(255,255,255), outline=card_line, width=1, shadow=False)
+    chart_img = fit_image(chart, (graph_w-10, graph_h-10), bg=(255,255,255), trim=False)
+    im.paste(chart_img, (graph_x+5, graph_y+5))
+    desc_x = graph_x + graph_w + 16
+    desc_y = app_y + 114
+    desc_w = market_x + market_w - 28 - desc_x
+    desc_h = 78
+    _draw_shadowed_card(d, (desc_x, desc_y, desc_x+desc_w, desc_y+desc_h), radius=16, fill=sky2, outline=card_line, width=1, shadow=True)
+    desc = market_description_text(market_info)
+    draw_fitted_wrapped(d, (desc_x+14, desc_y+12), desc, 13, False, gray, desc_w-28, desc_h-18, line_gap=3, min_size=10, max_lines=4)
+    source = market_source_text(market_info)
+    draw_fitted_wrapped(d, (graph_x, app_y+218), source, 11, False, gray, market_w-64, 18, line_gap=2, min_size=8, max_lines=1)
 
     # Overview / Differentiation
-    y = S(634)
+    y = 582
     box_w = (CW - gap) // 2
-    box_h = S(320)
     left_x = X
     right_x2 = X + box_w + gap
-    for bx, title, items in [
-        (left_x, label(lang, "overview"), data.get("overview", [])[:3]),
-        (right_x2, label(lang, "diff"), data.get("differentiation", [])[:3]),
+    box_h = 290
+    for bx, title, items, fill_col in [
+        (left_x, label(lang, "overview"), data.get("overview", [])[:3], mix(sky, (255,255,255), 0.35)),
+        (right_x2, label(lang, "diff"), data.get("differentiation", [])[:3], mix(sky2, (255,255,255), 0.18)),
     ]:
-        _draw_shadowed_card(d, (bx, y, bx+box_w, y+box_h), radius=S(28), fill=sky, outline=card_line, width=max(1,S(2)), shadow=True)
-        draw_section_title(d, bx+S(30), y+S(28), title, sec_font, primary)
-        draw_bullets_fit(d, bx+S(36), y+S(82), items, S(17), False, black, box_w-S(72), box_h-S(102), bullet="›", line_gap=4, item_gap=8, min_size=S(12), max_lines_per_item=3)
+        _draw_shadowed_card(d, (bx, y, bx+box_w, y+box_h), radius=28, fill=fill_col, outline=card_line, width=2, shadow=True)
+        draw_section_title(d, bx+36, y+34, title, sec_font, primary)
+        draw_bullets_fit(d, bx+42, y+88, items, 19, False, black, box_w-84, box_h-112, bullet="›", line_gap=4, item_gap=8, min_size=13, max_lines_per_item=3)
 
-    # Representative drawing / competitiveness
-    y = S(990)
-    rep_w_box = int(CW * 0.32)
-    comp_x = X + rep_w_box + S(20)
+    # Representative / Competitiveness
+    y = 900
+    rep_w_box = 380
+    comp_x = X + rep_w_box + 22
     comp_w = X + CW - comp_x
-    comp_h = S(360)
-    _draw_shadowed_card(d, (X, y, X+rep_w_box, y+comp_h), radius=S(28), fill=(255,255,255), outline=card_line, width=max(1,S(2)), shadow=True)
-    _draw_shadowed_card(d, (comp_x, y, comp_x+comp_w, y+comp_h), radius=S(28), fill=(255,255,255), outline=card_line, width=max(1,S(2)), shadow=True)
-    draw_section_title(d, X+S(30), y+S(28), label(lang, "drawing"), sec_font, primary)
-    draw_section_title(d, comp_x+S(30), y+S(28), label(lang, "competitiveness"), sec_font, primary)
-    rep = fit_image(rep_img, (rep_w_box-S(56), S(230)), bg=(255,255,255), trim=True)
-    im.paste(rep, (X+S(28), y+S(92)))
+    comp_h = 322
+    _draw_shadowed_card(d, (X, y, X+rep_w_box, y+comp_h), radius=28, fill=(255,255,255), outline=card_line, width=2, shadow=True)
+    _draw_shadowed_card(d, (comp_x, y, comp_x+comp_w, y+comp_h), radius=28, fill=(255,255,255), outline=card_line, width=2, shadow=True)
+    draw_section_title(d, X+36, y+34, label(lang, "drawing"), sec_font, primary)
+    draw_section_title(d, comp_x+36, y+34, label(lang, "competitiveness"), sec_font, primary)
 
-    inner_x = comp_x + S(34)
-    inner_w = comp_w - S(56)
-    sub1_y, sub1_h = y+S(84), S(114)
-    sub2_y, sub2_h = y+S(214), S(116)
-    _draw_shadowed_card(d, (inner_x, sub1_y, inner_x+inner_w, sub1_y+sub1_h), radius=S(16), fill=(255,255,255), outline=card_line, width=max(1,S(1)), shadow=True)
-    d.text((inner_x+S(18), sub1_y+S(12)), label(lang, "limitations"), font=load_font(S(18), True), fill=gray)
-    draw_bullets_fit(d, inner_x+S(20), sub1_y+S(40), data.get("limitations", [])[:2], S(13), False, black, inner_w-S(40), sub1_h-S(48), bullet="•", line_gap=3, item_gap=2, min_size=S(10), max_lines_per_item=2)
-    _draw_shadowed_card(d, (inner_x, sub2_y, inner_x+inner_w, sub2_y+sub2_h), radius=S(16), fill=sky2, outline=card_line, width=max(1,S(1)), shadow=True)
-    d.text((inner_x+S(18), sub2_y+S(12)), label(lang, "advantages"), font=load_font(S(18), True), fill=secondary)
-    draw_bullets_fit(d, inner_x+S(20), sub2_y+S(40), data.get("technical_advantages", [])[:2], S(13), False, primary, inner_w-S(40), sub2_h-S(48), bullet="•", line_gap=3, item_gap=2, min_size=S(10), max_lines_per_item=2)
+    # subtle inner panel for representative drawing
+    d.rounded_rectangle((X+24, y+76, X+rep_w_box-24, y+comp_h-22), radius=20, fill=mix((255,255,255), sky, 0.04), outline=None)
+    rep = fit_image(rep_img, (rep_w_box-74, 214), bg=(255,255,255), trim=True)
+    im.paste(rep, (X+37, y+82))
 
-    # IP
-    y = S(1390)
+    inner_x = comp_x + 44
+    inner_w = comp_w - 70
+    sub1_y, sub1_h = y+76, 102
+    sub2_y, sub2_h = y+194, 108
+    _draw_shadowed_card(d, (inner_x, sub1_y, inner_x+inner_w, sub1_y+sub1_h), radius=16, fill=(255,255,255), outline=card_line, width=1, shadow=True)
+    d.text((inner_x+20, sub1_y+14), label(lang, "limitations"), font=load_font(19, True), fill=gray)
+    draw_bullets_fit(d, inner_x+22, sub1_y+42, data.get("limitations", [])[:2], 14, False, black, inner_w-44, sub1_h-48, bullet="•", line_gap=3, item_gap=2, min_size=11, max_lines_per_item=2)
+
+    _draw_shadowed_card(d, (inner_x, sub2_y, inner_x+inner_w, sub2_y+sub2_h), radius=16, fill=mix(sky2, (255,255,255), 0.15), outline=card_line, width=1, shadow=True)
+    d.text((inner_x+20, sub2_y+14), label(lang, "advantages"), font=load_font(19, True), fill=secondary)
+    draw_bullets_fit(d, inner_x+22, sub2_y+42, data.get("technical_advantages", [])[:2], 14, False, primary, inner_w-44, sub2_h-48, bullet="•", line_gap=3, item_gap=2, min_size=11, max_lines_per_item=2)
+
+    # IP full width
+    y = 1252
     ip = normalize_ip(data.get("ip", {}))
-    ip_h = S(234)
-    _draw_shadowed_card(d, (X, y, X+CW, y+ip_h), radius=S(28), fill=sky2, outline=card_line, width=max(1,S(2)), shadow=True)
-    draw_section_title(d, X+S(30), y+S(28), label(lang, "ip"), sec_font, primary)
-    table_x, table_y = X+S(24), y+S(76)
-    table_w, table_h = CW-S(48), S(138)
-    header_h2 = S(40)
+    ip_h = 220
+    _draw_shadowed_card(d, (X, y, X+CW, y+ip_h), radius=28, fill=mix(sky2, (255,255,255), 0.08), outline=card_line, width=2, shadow=True)
+    draw_section_title(d, X+36, y+30, label(lang, "ip"), sec_font, primary)
+
+    table_x, table_y = X+28, y+72
+    table_w, table_h = CW-56, 132
+    header_h2 = 40
     col1 = int(table_w*0.45)
     col2 = int(table_w*0.28)
-    col3 = table_w - col1 - col2
-    d.rounded_rectangle((table_x, table_y, table_x+table_w, table_y+table_h), radius=S(12), fill=(255,255,255), outline=card_line, width=max(1,S(1)))
+    d.rounded_rectangle((table_x, table_y, table_x+table_w, table_y+table_h), radius=14, fill=(255,255,255), outline=card_line, width=1)
     d.rectangle((table_x, table_y, table_x+table_w, table_y+header_h2), fill=table_header, outline=table_header)
     c1 = table_x + col1
     c2 = c1 + col2
     for xx in [c1, c2]:
-        d.line((xx, table_y, xx, table_y+table_h), fill=card_line, width=max(1,S(1)))
-    draw_centered_wrapped(d, (table_x+S(8), table_y+S(4), c1-S(8), table_y+header_h2-S(2)), label(lang, "invention"), load_font(S(16), True), black, max_lines=1)
-    draw_centered_wrapped(d, (c1+S(8), table_y+S(4), c2-S(8), table_y+header_h2-S(2)), label(lang, "app_no"), load_font(S(12), True), black, max_lines=2, line_gap=1)
-    draw_centered_wrapped(d, (c2+S(8), table_y+S(4), table_x+table_w-S(8), table_y+header_h2-S(2)), label(lang, "app_date"), load_font(S(12), True), black, max_lines=2, line_gap=1)
-    draw_centered_wrapped(d, (table_x+S(10), table_y+header_h2+S(8), c1-S(10), table_y+table_h-S(8)), ip["title"] or data.get("original_title", ""), load_font(S(14), False), black, max_lines=2, line_gap=2)
+        d.line((xx, table_y, xx, table_y+table_h), fill=card_line, width=1)
+    draw_centered_wrapped(d, (table_x+8, table_y+4, c1-8, table_y+header_h2-2), label(lang, "invention"), load_font(18, True), black, max_lines=1)
+    draw_centered_wrapped(d, (c1+8, table_y+4, c2-8, table_y+header_h2-2), label(lang, "app_no"), load_font(14, True), black, max_lines=2, line_gap=1)
+    draw_centered_wrapped(d, (c2+8, table_y+4, table_x+table_w-8, table_y+header_h2-2), label(lang, "app_date"), load_font(14, True), black, max_lines=2, line_gap=1)
+    draw_centered_wrapped(d, (table_x+12, table_y+header_h2+8, c1-12, table_y+table_h-8), ip["title"] or data.get("original_title", ""), load_font(15, False), black, max_lines=2, line_gap=2)
     num_text = f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number']
     date_text = f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date']
-    draw_centered_wrapped(d, (c1+S(10), table_y+header_h2+S(8), c2-S(10), table_y+table_h-S(8)), num_text, load_font(S(15), False), black, max_lines=2, line_gap=3)
-    draw_centered_wrapped(d, (c2+S(10), table_y+header_h2+S(8), table_x+table_w-S(10), table_y+table_h-S(8)), date_text, load_font(S(15), False), black, max_lines=2, line_gap=3)
+    draw_centered_wrapped(d, (c1+10, table_y+header_h2+8, c2-10, table_y+table_h-8), num_text, load_font(17, False), black, max_lines=2, line_gap=3)
+    draw_centered_wrapped(d, (c2+10, table_y+header_h2+8, table_x+table_w-10, table_y+table_h-8), date_text, load_font(17, False), black, max_lines=2, line_gap=3)
 
     # Contact
-    y = S(1666)
-    contact_h = S(84)
-    _draw_shadowed_card(d, (X, y, X+CW, y+contact_h), radius=S(18), fill=(255,255,255), outline=card_line, width=max(1,S(2)), shadow=True)
-    d.text((X+S(34), y+S(24)), label(lang, "contact"), font=load_font(S(24), True), fill=primary)
-    draw_fitted_wrapped(d, (X+S(150), y+S(26)), contact, S(18), False, black, CW-S(180), S(30), line_gap=3, min_size=S(12), max_lines=1)
+    y = 1504
+    contact_h = 78
+    _draw_shadowed_card(d, (X, y, X+CW, y+contact_h), radius=18, fill=(255,255,255), outline=card_line, width=2, shadow=True)
+    d.text((X+42, y+23), label(lang, "contact"), font=load_font(26, True), fill=primary)
+    draw_fitted_wrapped(d, (X+160, y+27), contact, 20, False, black, CW-190, 30, line_gap=3, min_size=13, max_lines=1)
 
     return im
 
@@ -2297,12 +2307,11 @@ def make_high_quality_infographic_image(
     qr_img: Image.Image | None = None,
     piumlink_logo: Image.Image | None = None,
 ) -> Image.Image:
-    """재배치 최소화형 고품질 변환.
-    기존 SMK와 동일한 구조를 다시 렌더링한 뒤, 배포용 PNG/PDF에 적합하도록
-    선명도만 약하게 보정한다. 카드 위치/섹션 순서/정보 구조는 변경하지 않는다.
+    """규칙 기반의 고급 인포그래픽 렌더러.
+    기본 SMK의 구조는 유지하되, 보다 고급스러운 카드/배경/타이포를 적용하고
+    결과는 2배 해상도의 배포용 PNG/PDF로 출력한다.
     """
-    # 1) 기본 SMK와 같은 렌더러를 사용해 구조 안정성 유지
-    base = compose_tech_brief(
+    premium = compose_infographic_brief(
         data,
         rep_img,
         app_imgs,
@@ -2313,14 +2322,13 @@ def make_high_quality_infographic_image(
         piumlink_logo=piumlink_logo,
     ).convert("RGB")
 
-    # 2) 배포용 고해상도 PNG/PDF를 위해 2배 캔버스로 확장하되, 레이아웃은 변경하지 않음
     scale = 2
-    hq = base.resize((base.width * scale, base.height * scale), Image.LANCZOS)
-    hq = ImageEnhance.Contrast(hq).enhance(1.015)
-    hq = ImageEnhance.Sharpness(hq).enhance(1.08)
-    hq = hq.filter(ImageFilter.UnsharpMask(radius=1.0, percent=70, threshold=2))
+    hq = premium.resize((premium.width * scale, premium.height * scale), Image.LANCZOS)
+    hq = ImageEnhance.Contrast(hq).enhance(1.02)
+    hq = ImageEnhance.Sharpness(hq).enhance(1.10)
+    hq = hq.filter(ImageFilter.UnsharpMask(radius=1.0, percent=75, threshold=2))
 
-    # 3) 공식 로고/QR 영역은 필터 영향 없이 원본을 다시 삽입해 보존
+    # 로고/QR은 필터 영향 없이 원본 이미지를 다시 삽입해 선명도와 형태를 보존
     if university_logo is not None:
         uni_logo_size = 124 * scale
         left_logo = make_transparent_logo_canvas(university_logo, size=(uni_logo_size, uni_logo_size), padding=0)
