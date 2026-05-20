@@ -1817,7 +1817,9 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
 
     d.rectangle((0, 0, W, H), fill=(255,255,255))
 
-    header_h = 248
+    # 긴 기술명이 2~3줄로 바뀌어도 하단 요약 박스와 겹치지 않도록
+    # 헤더 영역을 기존 248px에서 280px로 확장하고, 제목/요약 박스 좌표를 분리한다.
+    header_h = 280
     d.rectangle((0, 0, W, header_h), fill=uni_pale)
     d.line((0, header_h, W, header_h), fill=mix(line, (160,160,160), 0.15), width=2)
 
@@ -1840,10 +1842,22 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     header_w = right_x - header_x - 22
     prof_suffix = label(lang, "prof_suffix")
     kicker = f"PIUM Tech Offer  x  {data.get('university_display') or data.get('university','')}  |  {data.get('department_display') or data.get('department','')}  |  {data.get('professor','')} {prof_suffix}"
-    draw_fitted_wrapped(d, (header_x, 54), kicker, 25, False, uni_primary, header_w, 32, line_gap=2, min_size=17, max_lines=1)
-    draw_fitted_wrapped(d, (header_x, 92), data.get("marketing_title", "기술명"), 44, True, uni_primary, header_w, 82, line_gap=3, min_size=29, max_lines=2)
+    draw_fitted_wrapped(d, (header_x, 42), kicker, 25, False, uni_primary, header_w, 32, line_gap=2, min_size=17, max_lines=1)
+    draw_fitted_wrapped(
+        d,
+        (header_x, 78),
+        data.get("marketing_title", "기술명"),
+        41,
+        True,
+        uni_primary,
+        header_w,
+        108,
+        line_gap=4,
+        min_size=24,
+        max_lines=3,
+    )
 
-    sub_x, sub_y, sub_w, sub_h = header_x, 174, 820, 54
+    sub_x, sub_y, sub_w, sub_h = header_x, 198, 820, 54
     _draw_shadowed_card(d, (sub_x, sub_y, sub_x+sub_w, sub_y+sub_h), radius=12, fill=(255,255,255), outline=uni_line, width=1, shadow=True)
     draw_fitted_centered_wrapped(d, (sub_x+22, sub_y+7, sub_x+sub_w-22, sub_y+sub_h-7), data.get("subtitle", ""), 20, False, gray, line_gap=3, min_size=12, max_lines=2)
 
@@ -2059,7 +2073,8 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     prs.slide_height = Inches(14.145)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
 
-    add_rect(slide, 0, 0, 1240, 248, fill=uni_pale, outline=uni_pale)
+    # 긴 기술명 대응: 이미지 렌더러와 동일하게 헤더 높이/좌표 확장
+    add_rect(slide, 0, 0, 1240, 280, fill=uni_pale, outline=uni_pale)
     uni_logo_size = 124
     left_logo = make_transparent_logo_canvas(university_logo, size=(uni_logo_size, uni_logo_size), padding=0) if university_logo else make_university_logo_box(None, data.get('university_display') or data.get('university',''), size=(uni_logo_size, uni_logo_size), bg=uni_pale, primary=uni_primary)
     slide.shapes.add_picture(img_bytes(left_logo), px(28), px(24), width=px(uni_logo_size), height=px(uni_logo_size))
@@ -2076,10 +2091,10 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     header_x = 190
     header_w = right_x - header_x - 22
     prof_suffix = label(lang, "prof_suffix")
-    add_textbox(slide, header_x, 54, header_w, 30, f"PIUM Tech Offer  x  {data.get('university_display') or data.get('university','')}  |  {data.get('department_display') or data.get('department','')}  |  {data.get('professor','')} {prof_suffix}", 13.5, False, uni_primary)
-    add_textbox(slide, header_x, 92, header_w, 78, data.get("marketing_title", ""), 25, True, uni_primary)
-    add_rect(slide, header_x, 174, 820, 54, fill=(255,255,255), outline=uni_line, radius=True)
-    add_textbox(slide, header_x+22, 181, 776, 40, data.get("subtitle", ""), 10.8, False, gray, align=PP_ALIGN.CENTER)
+    add_textbox(slide, header_x, 42, header_w, 30, f"PIUM Tech Offer  x  {data.get('university_display') or data.get('university','')}  |  {data.get('department_display') or data.get('department','')}  |  {data.get('professor','')} {prof_suffix}", 13.5, False, uni_primary)
+    add_textbox(slide, header_x, 78, header_w, 108, data.get("marketing_title", ""), 24, True, uni_primary)
+    add_rect(slide, header_x, 198, 820, 54, fill=(255,255,255), outline=uni_line, radius=True)
+    add_textbox(slide, header_x+22, 205, 776, 40, data.get("subtitle", ""), 10.8, False, gray, align=PP_ALIGN.CENTER)
 
     X = 28; CW = 1184
 
