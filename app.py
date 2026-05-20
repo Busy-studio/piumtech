@@ -2095,48 +2095,225 @@ def make_pdf_bytes_from_image(img: Image.Image) -> bytes:
     return bio.getvalue()
 
 
-def make_high_quality_infographic_image(
-    brief: Image.Image,
+def compose_infographic_brief(
+    data: Dict[str, Any],
+    rep_img: Image.Image,
+    app_imgs: List[Image.Image],
+    contact: str,
     university_logo: Image.Image | None = None,
     pium_logo: Image.Image | None = None,
+    qr_img: Image.Image | None = None,
     piumlink_logo: Image.Image | None = None,
-    scale: int = 2,
 ) -> Image.Image:
-    """최종 SMK를 통째로 고해상도 인포그래픽 PNG로 가공한다.
-    - 기본 레이아웃은 유지
-    - 2배 업스케일(A4 300dpi 수준) + 약한 샤프닝
-    - 대학/PIUM/우측 로고 이미지는 다시 덮어 그려 원형이 흐트러지지 않게 보존
+    """기존 SMK의 정보 구조와 컬러는 유지하되, 인포그래픽용으로 재배치한 고품질 렌더러."""
+    scale = 1.35
+    S = lambda v: int(round(v * scale))
+    W, H = S(1240), S(1754)
+    im = Image.new("RGB", (W, H), (248, 250, 252))
+    d = ImageDraw.Draw(im)
+
+    pal = get_visual_palette(university_logo)
+    uni_primary = pal["uni_primary"]
+    uni_pale = mix(pal["uni_pale"], (255,255,255), 0.15)
+    uni_line = pal["uni_line"]
+    primary = pal["pium_blue"]
+    secondary = pal["tech_blue"]
+    accent = pal["tech_cyan"]
+    sky = mix(pal["tech_pale"], (255,255,255), 0.18)
+    sky2 = mix(pal["tech_pale2"], (255,255,255), 0.08)
+    line = pal["tech_line"]
+    table_header = mix(pal["table_header"], (255,255,255), 0.06)
+    black = pal["black"]
+    gray = pal["gray"]
+    lang = get_lang_code(data.get("language", "ko"))
+
+    d.rectangle((0, 0, W, H), fill=(248, 250, 252))
+
+    # Header
+    header_h = S(300)
+    d.rectangle((0, 0, W, header_h), fill=uni_pale)
+    d.rectangle((0, header_h - S(12), W, header_h), fill=mix(uni_primary, (255,255,255), 0.75))
+
+    uni_logo_size = S(124)
+    left_logo = make_transparent_logo_canvas(university_logo, size=(uni_logo_size, uni_logo_size), padding=0) if university_logo else make_university_logo_box(None, data.get('university_display') or data.get('university',''), size=(uni_logo_size, uni_logo_size), bg=uni_pale, primary=uni_primary)
+    im.paste(left_logo, (S(36), S(24)), left_logo if left_logo.mode == 'RGBA' else None)
+
+    right_card_x, right_card_y = W - S(176), S(18)
+    right_card_w, right_card_h = S(148), S(220)
+    _draw_shadowed_card(d, (right_card_x, right_card_y, right_card_x + right_card_w, right_card_y + right_card_h), radius=S(18), fill=(255,255,255), outline=uni_line, width=max(1,S(1)), shadow=True)
+    if pium_logo is not None:
+        pium_canvas = make_transparent_logo_canvas(pium_logo, size=(S(128), S(48)), padding=0)
+        im.paste(pium_canvas, (right_card_x + S(10), right_card_y + S(14)), pium_canvas)
+    if piumlink_logo is not None:
+        link_size = S(112)
+        link = make_transparent_logo_canvas(piumlink_logo, size=(link_size, link_size), padding=0)
+        im.paste(link, (right_card_x + (right_card_w - link_size)//2, right_card_y + S(74)), link)
+
+    header_x = S(188)
+    header_w = right_card_x - header_x - S(30)
+    prof_suffix = label(lang, "prof_suffix")
+    kicker = f"PIUM Tech Offer x {data.get('university_display') or data.get('university','')} | {data.get('department_display') or data.get('department','')} | {data.get('professor','')} {prof_suffix}"
+    draw_fitted_wrapped(d, (header_x, S(36)), kicker, S(17), False, ensure_dark(mix(uni_primary, black, 0.10)), header_w, S(28), line_gap=2, min_size=S(11), max_lines=1)
+    draw_fitted_wrapped(d, (header_x, S(76)), data.get("marketing_title", "기술명"), S(38), True, uni_primary, header_w, S(116), line_gap=S(3), min_size=S(24), max_lines=3)
+    subtitle = (data.get("subtitle", "") or "").strip()
+    if subtitle:
+        subtitle_color = ensure_dark(mix(uni_primary, black, 0.35))
+        draw_fitted_wrapped(d, (header_x, S(198)), f"- {subtitle}", S(18), False, subtitle_color, header_w, S(32), line_gap=2, min_size=S(12), max_lines=2)
+
+    # Shared card geometry
+    X = S(28)
+    CW = W - S(56)
+    gap = S(28)
+    sec_font = load_font(S(24), True)
+    card_line = mix(line, (180, 190, 205), 0.10)
+
+    # Applications / Market
+    app_y, app_h = S(324), S(280)
+    app_card_w = int(CW * 0.46)
+    market_x = X + app_card_w + gap
+    market_w = CW - app_card_w - gap
+    _draw_shadowed_card(d, (X, app_y, X+app_card_w, app_y+app_h), radius=S(28), fill=(255,255,255), outline=card_line, width=max(1,S(2)), shadow=True)
+    _draw_shadowed_card(d, (market_x, app_y, market_x+market_w, app_y+app_h), radius=S(28), fill=(255,255,255), outline=card_line, width=max(1,S(2)), shadow=True)
+    draw_section_title(d, X+S(28), app_y+S(24), label(lang, "apps"), sec_font, primary)
+    draw_section_title(d, market_x+S(28), app_y+S(24), label(lang, "market"), sec_font, primary)
+
+    apps = data.get("applications", [])[:3]
+    app_inner_x = X + S(20)
+    app_inner_w = app_card_w - S(40)
+    col_gap = S(6)
+    col_w = (app_inner_w - col_gap*2) // 3
+    icon_size = (S(118), S(96))
+    icon_y = app_y + S(84)
+    for i in range(3):
+        col_x = app_inner_x + i*(col_w + col_gap)
+        if i > 0:
+            sep_x = col_x - col_gap//2
+            d.line((sep_x, app_y+S(84), sep_x, app_y+app_h-S(40)), fill=mix(card_line, (255,255,255), 0.24), width=max(1,S(1)))
+        if i < len(app_imgs):
+            icon = fit_image(app_imgs[i], icon_size, bg=(255,255,255), trim=True)
+            im.paste(icon, (col_x + (col_w-icon_size[0])//2, icon_y))
+        app = apps[i] if i < len(apps) else {"name":""}
+        draw_centered_wrapped(d, (col_x+S(4), app_y+S(188), col_x+col_w-S(4), app_y+S(246)), app.get("name", ""), load_font(S(18), True), black, max_lines=2, line_gap=3)
+
+    market_info = normalize_market_info(data.get("market_info", {}))
+    market_title = market_info.get("display_title") or market_info.get("market_name") or label(lang, "market_default")
+    draw_fitted_wrapped(d, (market_x+S(28), app_y+S(70)), market_title, S(18), True, black, market_w-S(56), S(30), line_gap=2, min_size=S(12), max_lines=1)
+    chart, _mode = get_market_visual(market_info, primary=primary, accent=accent)
+    graph_x, graph_y = market_x+S(28), app_y+S(100)
+    graph_w, graph_h = S(186), S(110)
+    _draw_shadowed_card(d, (graph_x, graph_y, graph_x+graph_w, graph_y+graph_h), radius=S(12), fill=(255,255,255), outline=card_line, width=max(1,S(1)), shadow=False)
+    chart_img = fit_image(chart, (graph_w-S(10), graph_h-S(10)), bg=(255,255,255), trim=False)
+    im.paste(chart_img, (graph_x+S(5), graph_y+S(5)))
+    desc_x = graph_x + graph_w + S(18)
+    desc_y = app_y + S(108)
+    desc_w = market_x + market_w - S(24) - desc_x
+    desc_h = S(84)
+    _draw_shadowed_card(d, (desc_x, desc_y, desc_x+desc_w, desc_y+desc_h), radius=S(16), fill=sky2, outline=card_line, width=max(1,S(1)), shadow=True)
+    draw_fitted_wrapped(d, (desc_x+S(14), desc_y+S(12)), market_description_text(market_info), S(13), False, gray, desc_w-S(28), desc_h-S(18), line_gap=3, min_size=S(9), max_lines=4)
+    draw_fitted_wrapped(d, (graph_x, app_y+app_h-S(34)), market_source_text(market_info), S(10), False, gray, market_w-S(40), S(18), line_gap=2, min_size=S(8), max_lines=1)
+
+    # Overview / Differentiation
+    y = S(634)
+    box_w = (CW - gap) // 2
+    box_h = S(320)
+    left_x = X
+    right_x2 = X + box_w + gap
+    for bx, title, items in [
+        (left_x, label(lang, "overview"), data.get("overview", [])[:3]),
+        (right_x2, label(lang, "diff"), data.get("differentiation", [])[:3]),
+    ]:
+        _draw_shadowed_card(d, (bx, y, bx+box_w, y+box_h), radius=S(28), fill=sky, outline=card_line, width=max(1,S(2)), shadow=True)
+        draw_section_title(d, bx+S(30), y+S(28), title, sec_font, primary)
+        draw_bullets_fit(d, bx+S(36), y+S(82), items, S(17), False, black, box_w-S(72), box_h-S(102), bullet="›", line_gap=4, item_gap=8, min_size=S(12), max_lines_per_item=3)
+
+    # Representative drawing / competitiveness
+    y = S(990)
+    rep_w_box = int(CW * 0.32)
+    comp_x = X + rep_w_box + S(20)
+    comp_w = X + CW - comp_x
+    comp_h = S(360)
+    _draw_shadowed_card(d, (X, y, X+rep_w_box, y+comp_h), radius=S(28), fill=(255,255,255), outline=card_line, width=max(1,S(2)), shadow=True)
+    _draw_shadowed_card(d, (comp_x, y, comp_x+comp_w, y+comp_h), radius=S(28), fill=(255,255,255), outline=card_line, width=max(1,S(2)), shadow=True)
+    draw_section_title(d, X+S(30), y+S(28), label(lang, "drawing"), sec_font, primary)
+    draw_section_title(d, comp_x+S(30), y+S(28), label(lang, "competitiveness"), sec_font, primary)
+    rep = fit_image(rep_img, (rep_w_box-S(56), S(230)), bg=(255,255,255), trim=True)
+    im.paste(rep, (X+S(28), y+S(92)))
+
+    inner_x = comp_x + S(34)
+    inner_w = comp_w - S(56)
+    sub1_y, sub1_h = y+S(84), S(114)
+    sub2_y, sub2_h = y+S(214), S(116)
+    _draw_shadowed_card(d, (inner_x, sub1_y, inner_x+inner_w, sub1_y+sub1_h), radius=S(16), fill=(255,255,255), outline=card_line, width=max(1,S(1)), shadow=True)
+    d.text((inner_x+S(18), sub1_y+S(12)), label(lang, "limitations"), font=load_font(S(18), True), fill=gray)
+    draw_bullets_fit(d, inner_x+S(20), sub1_y+S(40), data.get("limitations", [])[:2], S(13), False, black, inner_w-S(40), sub1_h-S(48), bullet="•", line_gap=3, item_gap=2, min_size=S(10), max_lines_per_item=2)
+    _draw_shadowed_card(d, (inner_x, sub2_y, inner_x+inner_w, sub2_y+sub2_h), radius=S(16), fill=sky2, outline=card_line, width=max(1,S(1)), shadow=True)
+    d.text((inner_x+S(18), sub2_y+S(12)), label(lang, "advantages"), font=load_font(S(18), True), fill=secondary)
+    draw_bullets_fit(d, inner_x+S(20), sub2_y+S(40), data.get("technical_advantages", [])[:2], S(13), False, primary, inner_w-S(40), sub2_h-S(48), bullet="•", line_gap=3, item_gap=2, min_size=S(10), max_lines_per_item=2)
+
+    # IP
+    y = S(1390)
+    ip = normalize_ip(data.get("ip", {}))
+    ip_h = S(234)
+    _draw_shadowed_card(d, (X, y, X+CW, y+ip_h), radius=S(28), fill=sky2, outline=card_line, width=max(1,S(2)), shadow=True)
+    draw_section_title(d, X+S(30), y+S(28), label(lang, "ip"), sec_font, primary)
+    table_x, table_y = X+S(24), y+S(76)
+    table_w, table_h = CW-S(48), S(138)
+    header_h2 = S(40)
+    col1 = int(table_w*0.45)
+    col2 = int(table_w*0.28)
+    col3 = table_w - col1 - col2
+    d.rounded_rectangle((table_x, table_y, table_x+table_w, table_y+table_h), radius=S(12), fill=(255,255,255), outline=card_line, width=max(1,S(1)))
+    d.rectangle((table_x, table_y, table_x+table_w, table_y+header_h2), fill=table_header, outline=table_header)
+    c1 = table_x + col1
+    c2 = c1 + col2
+    for xx in [c1, c2]:
+        d.line((xx, table_y, xx, table_y+table_h), fill=card_line, width=max(1,S(1)))
+    draw_centered_wrapped(d, (table_x+S(8), table_y+S(4), c1-S(8), table_y+header_h2-S(2)), label(lang, "invention"), load_font(S(16), True), black, max_lines=1)
+    draw_centered_wrapped(d, (c1+S(8), table_y+S(4), c2-S(8), table_y+header_h2-S(2)), label(lang, "app_no"), load_font(S(12), True), black, max_lines=2, line_gap=1)
+    draw_centered_wrapped(d, (c2+S(8), table_y+S(4), table_x+table_w-S(8), table_y+header_h2-S(2)), label(lang, "app_date"), load_font(S(12), True), black, max_lines=2, line_gap=1)
+    draw_centered_wrapped(d, (table_x+S(10), table_y+header_h2+S(8), c1-S(10), table_y+table_h-S(8)), ip["title"] or data.get("original_title", ""), load_font(S(14), False), black, max_lines=2, line_gap=2)
+    num_text = f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number']
+    date_text = f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date']
+    draw_centered_wrapped(d, (c1+S(10), table_y+header_h2+S(8), c2-S(10), table_y+table_h-S(8)), num_text, load_font(S(15), False), black, max_lines=2, line_gap=3)
+    draw_centered_wrapped(d, (c2+S(10), table_y+header_h2+S(8), table_x+table_w-S(10), table_y+table_h-S(8)), date_text, load_font(S(15), False), black, max_lines=2, line_gap=3)
+
+    # Contact
+    y = S(1666)
+    contact_h = S(84)
+    _draw_shadowed_card(d, (X, y, X+CW, y+contact_h), radius=S(18), fill=(255,255,255), outline=card_line, width=max(1,S(2)), shadow=True)
+    d.text((X+S(34), y+S(24)), label(lang, "contact"), font=load_font(S(24), True), fill=primary)
+    draw_fitted_wrapped(d, (X+S(150), y+S(26)), contact, S(18), False, black, CW-S(180), S(30), line_gap=3, min_size=S(12), max_lines=1)
+
+    return im
+
+
+def make_high_quality_infographic_image(
+    data: Dict[str, Any],
+    rep_img: Image.Image,
+    app_imgs: List[Image.Image],
+    contact: str,
+    university_logo: Image.Image | None = None,
+    pium_logo: Image.Image | None = None,
+    qr_img: Image.Image | None = None,
+    piumlink_logo: Image.Image | None = None,
+) -> Image.Image:
+    """최종 SMK 데이터를 기반으로 고품질 인포그래픽 이미지를 다시 렌더링한다.
+    기본 뼈대와 컬러체계는 유지하되, 글꼴 크기/여백/카드 비율을 인포그래픽용으로 재조정한다.
+    대학 로고, PIUM 로고, 우측 QR/로고 이미지는 원본 형태를 유지한다.
     """
-    base = brief.convert("RGB")
-    hq = base.resize((base.width * scale, base.height * scale), Image.LANCZOS)
-    hq = ImageEnhance.Contrast(hq).enhance(1.02)
-    hq = ImageEnhance.Sharpness(hq).enhance(1.10)
-    hq = hq.filter(ImageFilter.UnsharpMask(radius=1.4 * scale / 2, percent=110, threshold=2))
-
-    # 로고 보호 오버레이: 기존 SMK에 사용한 공식 로고를 다시 얹어 시각적 변화 최소화
-    if any([university_logo, pium_logo, piumlink_logo]):
-        if university_logo is not None:
-            uni_logo_size = 124 * scale
-            left_logo = make_transparent_logo_canvas(university_logo, size=(uni_logo_size, uni_logo_size), padding=0)
-            hq.paste(left_logo, (28 * scale, 24 * scale), left_logo if left_logo.mode == 'RGBA' else None)
-
-        if pium_logo is not None:
-            # compose_tech_brief 기준 좌표 유지
-            right_card_x, right_card_y = (1240 - 178) * scale, 18 * scale
-            right_x, top_y = right_card_x + 10 * scale, right_card_y + 14 * scale
-            pium_canvas = make_transparent_logo_canvas(pium_logo, size=(128 * scale, 48 * scale), padding=0)
-            hq.paste(pium_canvas, (right_x, top_y), pium_canvas if pium_canvas.mode == 'RGBA' else None)
-
-        if piumlink_logo is not None:
-            right_card_x, right_card_y = (1240 - 178) * scale, 18 * scale
-            top_y = right_card_y + 14 * scale
-            link_size = 112 * scale
-            link = make_transparent_logo_canvas(piumlink_logo, size=(link_size, link_size), padding=0)
-            link_x = right_card_x + ((148 * scale) - link_size) // 2
-            link_y = top_y + 60 * scale
-            hq.paste(link, (link_x, link_y), link if link.mode == 'RGBA' else None)
-
-    return hq
+    infographic = compose_infographic_brief(
+        data,
+        rep_img,
+        app_imgs,
+        contact,
+        university_logo=university_logo,
+        pium_logo=pium_logo,
+        qr_img=qr_img,
+        piumlink_logo=piumlink_logo,
+    )
+    infographic = ImageEnhance.Contrast(infographic).enhance(1.02)
+    infographic = ImageEnhance.Sharpness(infographic).enhance(1.06)
+    return infographic
 
 
 def make_png_bytes_from_image(img: Image.Image) -> bytes:
@@ -2478,18 +2655,21 @@ else:
                 pium_logo = get_pium_logo_image() if use_logos else None
                 piumlink_logo = get_piumlink_logo_image() if use_logos else None
                 hq_image = make_high_quality_infographic_image(
-                    st.session_state.brief_image,
+                    st.session_state.data,
+                    st.session_state.rep_img,
+                    st.session_state.app_imgs,
+                    build_contact_text(org, name, position, phone, email, output_language),
                     university_logo=university_logo,
                     pium_logo=pium_logo,
+                    qr_img=st.session_state.qr_img,
                     piumlink_logo=piumlink_logo,
-                    scale=2,
                 )
                 st.session_state.hq_image = hq_image
                 st.session_state.hq_png_bytes = make_png_bytes_from_image(hq_image)
 
         if st.session_state.hq_image is not None:
             st.markdown("#### 고품질 인포그래픽 이미지")
-            st.caption("기본 SMK 레이아웃은 유지하되, 고해상도 PNG로 가공한 결과입니다. 대학 로고, PIUM 센터 로고, 우측 로고 이미지는 원본 형태를 유지합니다.")
+            st.caption("기본 뼈대와 색상 체계는 유지하되, 인포그래픽용으로 글씨 크기·여백·카드 비율을 다시 렌더링한 결과입니다. 대학 로고, PIUM 센터 로고, 우측 QR/로고 이미지는 원본 형태를 유지합니다.")
             st.image(st.session_state.hq_image, use_container_width=True)
             st.download_button(
                 "고품질 PNG 다운로드",
