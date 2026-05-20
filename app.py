@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Tuple
 
 import fitz
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont, ImageStat
+from PIL import Image, ImageDraw, ImageFont, ImageStat, ImageEnhance, ImageFilter
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -2094,6 +2094,57 @@ def make_pdf_bytes_from_image(img: Image.Image) -> bytes:
     page.save(bio, "PDF", resolution=150.0)
     return bio.getvalue()
 
+
+def make_high_quality_infographic_image(
+    brief: Image.Image,
+    university_logo: Image.Image | None = None,
+    pium_logo: Image.Image | None = None,
+    piumlink_logo: Image.Image | None = None,
+    scale: int = 2,
+) -> Image.Image:
+    """최종 SMK를 통째로 고해상도 인포그래픽 PNG로 가공한다.
+    - 기본 레이아웃은 유지
+    - 2배 업스케일(A4 300dpi 수준) + 약한 샤프닝
+    - 대학/PIUM/우측 로고 이미지는 다시 덮어 그려 원형이 흐트러지지 않게 보존
+    """
+    base = brief.convert("RGB")
+    hq = base.resize((base.width * scale, base.height * scale), Image.LANCZOS)
+    hq = ImageEnhance.Contrast(hq).enhance(1.02)
+    hq = ImageEnhance.Sharpness(hq).enhance(1.10)
+    hq = hq.filter(ImageFilter.UnsharpMask(radius=1.4 * scale / 2, percent=110, threshold=2))
+
+    # 로고 보호 오버레이: 기존 SMK에 사용한 공식 로고를 다시 얹어 시각적 변화 최소화
+    if any([university_logo, pium_logo, piumlink_logo]):
+        if university_logo is not None:
+            uni_logo_size = 124 * scale
+            left_logo = make_transparent_logo_canvas(university_logo, size=(uni_logo_size, uni_logo_size), padding=0)
+            hq.paste(left_logo, (28 * scale, 24 * scale), left_logo if left_logo.mode == 'RGBA' else None)
+
+        if pium_logo is not None:
+            # compose_tech_brief 기준 좌표 유지
+            right_card_x, right_card_y = (1240 - 178) * scale, 18 * scale
+            right_x, top_y = right_card_x + 10 * scale, right_card_y + 14 * scale
+            pium_canvas = make_transparent_logo_canvas(pium_logo, size=(128 * scale, 48 * scale), padding=0)
+            hq.paste(pium_canvas, (right_x, top_y), pium_canvas if pium_canvas.mode == 'RGBA' else None)
+
+        if piumlink_logo is not None:
+            right_card_x, right_card_y = (1240 - 178) * scale, 18 * scale
+            top_y = right_card_y + 14 * scale
+            link_size = 112 * scale
+            link = make_transparent_logo_canvas(piumlink_logo, size=(link_size, link_size), padding=0)
+            link_x = right_card_x + ((148 * scale) - link_size) // 2
+            link_y = top_y + 60 * scale
+            hq.paste(link, (link_x, link_y), link if link.mode == 'RGBA' else None)
+
+    return hq
+
+
+def make_png_bytes_from_image(img: Image.Image) -> bytes:
+    bio = BytesIO()
+    img.save(bio, format="PNG")
+    return bio.getvalue()
+
+
 def img_bytes(img: Image.Image) -> BytesIO:
     bio = BytesIO()
     img.save(bio, format="PNG")
@@ -2352,7 +2403,8 @@ with st.sidebar:
 
 for key, default in {
     "data": None, "brief_image": None, "pdf_bytes": None, "pptx_bytes": None,
-    "pdf_path": None, "app_imgs": [], "rep_img": None, "qr_img": None, "edit_version": 0
+    "pdf_path": None, "app_imgs": [], "rep_img": None, "qr_img": None, "edit_version": 0,
+    "hq_image": None, "hq_png_bytes": None
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -2409,6 +2461,8 @@ if generate_btn:
         st.session_state.brief_image = brief
         st.session_state.pdf_bytes = make_pdf_bytes_from_image(brief)
         st.session_state.pptx_bytes = make_pptx_bytes(data, rep_img, app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img, piumlink_logo)
+        st.session_state.hq_image = None
+        st.session_state.hq_png_bytes = None
 
 if st.session_state.data is None:
     st.info("왼쪽에서 정보를 입력하고 특허 PDF를 업로드한 뒤 'SMK 생성'을 누르세요.")
@@ -2417,6 +2471,34 @@ else:
     with col1:
         st.subheader("SMK 미리보기")
         st.image(st.session_state.brief_image, use_container_width=True)
+
+        if st.button("고품질 이미지로 변환", use_container_width=True):
+            with st.spinner("최종 SMK를 고품질 인포그래픽 이미지로 변환 중..."):
+                university_logo = get_logo_image(university) if use_logos else None
+                pium_logo = get_pium_logo_image() if use_logos else None
+                piumlink_logo = get_piumlink_logo_image() if use_logos else None
+                hq_image = make_high_quality_infographic_image(
+                    st.session_state.brief_image,
+                    university_logo=university_logo,
+                    pium_logo=pium_logo,
+                    piumlink_logo=piumlink_logo,
+                    scale=2,
+                )
+                st.session_state.hq_image = hq_image
+                st.session_state.hq_png_bytes = make_png_bytes_from_image(hq_image)
+
+        if st.session_state.hq_image is not None:
+            st.markdown("#### 고품질 인포그래픽 이미지")
+            st.caption("기본 SMK 레이아웃은 유지하되, 고해상도 PNG로 가공한 결과입니다. 대학 로고, PIUM 센터 로고, 우측 로고 이미지는 원본 형태를 유지합니다.")
+            st.image(st.session_state.hq_image, use_container_width=True)
+            st.download_button(
+                "고품질 PNG 다운로드",
+                st.session_state.hq_png_bytes,
+                build_export_basename(st.session_state.data)+"_infographic.png",
+                "image/png",
+                use_container_width=True,
+            )
+
         c1, c2 = st.columns(2)
         with c1:
             st.download_button("PDF 다운로드", st.session_state.pdf_bytes, build_export_basename(st.session_state.data)+".pdf", "application/pdf", type="primary", use_container_width=True)
@@ -2524,6 +2606,8 @@ else:
                 st.session_state.brief_image = brief
                 st.session_state.pdf_bytes = make_pdf_bytes_from_image(brief)
                 st.session_state.pptx_bytes = make_pptx_bytes(edited, rep_img, st.session_state.app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img, piumlink_logo)
+                st.session_state.hq_image = None
+                st.session_state.hq_png_bytes = None
                 st.session_state.edit_version += 1
             st.success("수정 내용이 반영되었습니다.")
             st.rerun()
