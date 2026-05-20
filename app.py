@@ -1926,13 +1926,23 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
         max_lines=3,
     )
 
-    # 서브카피는 입력창/버튼처럼 보이지 않도록 흰 박스 대신 soft caption bar로 처리
-    sub_x, sub_y, sub_w, sub_h = header_x, 202, 820, 46
-    sub_fill = mix(uni_primary, (255,255,255), 0.90)
-    sub_outline = mix(uni_primary, (255,255,255), 0.78)
-    sub_text = ensure_dark(mix(uni_primary, black, 0.35))
-    d.rounded_rectangle((sub_x, sub_y, sub_x+sub_w, sub_y+sub_h), radius=12, fill=sub_fill, outline=sub_outline, width=1)
-    draw_fitted_centered_wrapped(d, (sub_x+20, sub_y+6, sub_x+sub_w-20, sub_y+sub_h-6), data.get("subtitle", ""), 19, False, sub_text, line_gap=2, min_size=12, max_lines=2)
+    # 서브카피는 별도 박스 없이 제목 아래에 자연스럽게 이어지는 한 줄 설명으로 처리
+    subtitle = (data.get("subtitle", "") or "").strip()
+    if subtitle:
+        sub_text = ensure_dark(mix(uni_primary, black, 0.35))
+        draw_fitted_wrapped(
+            d,
+            (header_x, 202),
+            f"- {subtitle}",
+            19,
+            False,
+            sub_text,
+            header_w,
+            34,
+            line_gap=2,
+            min_size=12,
+            max_lines=2,
+        )
 
     X = 28
     CW = W - 56
@@ -2172,11 +2182,10 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     prof_suffix = label(lang, "prof_suffix")
     add_textbox(slide, header_x, 42, header_w, 30, f"PIUM Tech Offer  x  {data.get('university_display') or data.get('university','')}  |  {data.get('department_display') or data.get('department','')}  |  {data.get('professor','')} {prof_suffix}", 13.5, False, uni_primary)
     add_textbox(slide, header_x, 78, header_w, 108, data.get("marketing_title", ""), 24, True, uni_primary)
-    sub_fill = mix(uni_primary, (255,255,255), 0.90)
-    sub_outline = mix(uni_primary, (255,255,255), 0.78)
-    sub_text = ensure_dark(mix(uni_primary, black, 0.35))
-    add_rect(slide, header_x, 202, 820, 46, fill=sub_fill, outline=sub_outline, radius=True)
-    add_textbox(slide, header_x+20, 208, 780, 30, data.get("subtitle", ""), 10.6, False, sub_text, align=PP_ALIGN.CENTER)
+    subtitle = (data.get("subtitle", "") or "").strip()
+    if subtitle:
+        sub_text = ensure_dark(mix(uni_primary, black, 0.35))
+        add_textbox(slide, header_x, 204, header_w, 26, f"- {subtitle}", 11.2, False, sub_text, align=PP_ALIGN.LEFT)
 
     X = 28; CW = 1184
 
