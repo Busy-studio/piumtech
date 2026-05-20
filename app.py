@@ -894,8 +894,49 @@ JSON 형식:
     res = client.responses.create(model=TEXT_MODEL_FIXED, input=prompt, temperature=0.2)
     return safe_json_parse(res.output_text)
 
-def generate_application_image(title: str, desc: str) -> Image.Image:
+def rgb_to_hex(color: Tuple[int, int, int]) -> str:
+    return "#%02X%02X%02X" % tuple(int(max(0, min(255, c))) for c in color)
+
+
+def recolor_icon_palette(img: Image.Image, primary: Tuple[int, int, int], accent: Tuple[int, int, int]) -> Image.Image:
+    """적용분야 아이콘이 기본 파랑 계열로 생성되더라도 대학 로고 대표색으로 한 번 더 보정."""
+    rgba = img.convert("RGBA")
+    out = []
+    for r, g, b, a in rgba.getdata():
+        if a == 0:
+            out.append((r, g, b, a))
+            continue
+        mx, mn = max(r, g, b), min(r, g, b)
+        sat = mx - mn
+        bright = (r + g + b) / 3.0
+
+        # 흰 배경 / 거의 무채색은 그대로 유지
+        if bright > 245 or sat < 22:
+            out.append((r, g, b, a))
+            continue
+
+        # 원본이 청록 계열이면 accent, 그 외 유채색은 primary 위주로 매핑
+        is_cyanish = (g >= r + 8 and b >= r + 8)
+        target = accent if is_cyanish else primary
+
+        # 밝기와 채도를 살려 shading 유지
+        tone = 0.22 + 0.68 * (bright / 255.0)
+        strength = min(0.82, 0.26 + (sat / 255.0) * 0.56)
+        tinted = tuple(clamp(255 - (255 - target[i]) * tone) for i in range(3))
+        nr, ng, nb = mix((r, g, b), tinted, strength)
+        out.append((nr, ng, nb, a))
+
+    rgba.putdata(out)
+    return rgba.convert("RGB")
+
+
+def generate_application_image(title: str, desc: str, university_logo: Image.Image | None = None) -> Image.Image:
     client = get_client()
+    theme = extract_logo_theme(university_logo)
+    primary = theme["primary"]
+    accent = theme["accent"]
+    primary_hex = rgb_to_hex(primary)
+    accent_hex = rgb_to_hex(accent)
     prompt = f"""
 Create ONE icon from a unified premium technology icon set for a Korean university tech-transfer one-page brochure.
 Application: {title}
@@ -904,7 +945,11 @@ Description: {desc}
 Mandatory visual style:
 - pure white background only, no black background, no dark vignette, no colored backdrop
 - consistent semi-isometric vector-flat illustration style
-- clean blue/cyan/white/light-gray palette with subtle 3D depth
+- use the selected university logo color family as the main accent palette
+- primary brand color: {primary_hex}
+- secondary brand color: {accent_hex}
+- preserve that brand-accented palette instead of default generic blue if the university logo color is different
+- allow white and light gray as neutrals only
 - same stroke thickness, same lighting direction, same icon scale
 - centered object with generous white margin
 - professional public-sector technology marketing style
@@ -913,15 +958,22 @@ Mandatory visual style:
     result = client.images.generate(model=IMAGE_MODEL_FIXED, prompt=prompt, size="1024x1024")
     img_b64 = result.data[0].b64_json
     img = Image.open(BytesIO(base64.b64decode(img_b64))).convert("RGB")
-    return clean_dark_background(img)
+    img = clean_dark_background(img)
+    return recolor_icon_palette(img, primary, accent)
 
-def generate_application_images_set(apps: List[Dict[str, Any]]) -> List[Image.Image]:
+
+def generate_application_images_set(apps: List[Dict[str, Any]], university_logo: Image.Image | None = None) -> List[Image.Image]:
     """3개 적용분야 아이콘을 한 번에 생성 후 3등분해 그림체를 최대한 통일."""
     client = get_client()
+    theme = extract_logo_theme(university_logo)
+    primary = theme["primary"]
+    accent = theme["accent"]
+    primary_hex = rgb_to_hex(primary)
+    accent_hex = rgb_to_hex(accent)
     app_text = []
     for idx, app in enumerate(apps[:3], 1):
         app_text.append(f"{idx}. {app.get('name','')} - {app.get('description','')}")
-    joined = "\\n".join(app_text)
+    joined = "\n".join(app_text)
     prompt = f"""
 Create a horizontal set of THREE matching application icons for a Korean university technology brief.
 The three icons must look like they belong to the exact same icon family.
@@ -936,7 +988,11 @@ Mandatory layout:
 
 Mandatory unified visual style:
 - consistent semi-isometric vector-flat illustration style
-- clean blue/cyan/white/light-gray palette with subtle 3D depth
+- use the selected university logo color family as the main accent palette
+- primary brand color: {primary_hex}
+- secondary brand color: {accent_hex}
+- preserve that brand-accented palette instead of default generic blue if the university logo color is different
+- allow white and light gray as neutrals only
 - same stroke thickness, same lighting direction, same icon scale
 - centered objects, generous white margin
 - professional public-sector technology marketing style
@@ -949,7 +1005,7 @@ Mandatory unified visual style:
     icons = []
     for i in range(3):
         crop = sheet.crop((i*w//3, 0, (i+1)*w//3, h))
-        icons.append(crop)
+        icons.append(recolor_icon_palette(crop, primary, accent))
     return icons
 
 # -----------------------------------------------------
@@ -2290,18 +2346,19 @@ if generate_btn:
         data["market_info"] = generate_market_info_with_web(data)
         st.session_state.data = data
         st.session_state.edit_version += 1
+    university_logo = get_logo_image(university) if use_logos else None
 
     app_imgs=[]
     if make_images:
         with st.spinner("적용분야 이미지 세트 생성 중..."):
             try:
-                app_imgs = generate_application_images_set(data.get("applications", [])[:3])
+                app_imgs = generate_application_images_set(data.get("applications", [])[:3], university_logo=university_logo)
             except Exception as e:
                 st.warning(f"적용분야 이미지 세트 생성 실패: {e}")
                 # 세트 생성 실패 시 개별 생성으로 fallback
                 for app in data.get("applications", [])[:3]:
                     try:
-                        app_imgs.append(generate_application_image(app.get("name",""), app.get("description","")))
+                        app_imgs.append(generate_application_image(app.get("name",""), app.get("description",""), university_logo=university_logo))
                     except Exception as e2:
                         st.warning(f"적용분야 이미지 생성 실패: {e2}")
                         app_imgs.append(Image.new("RGB", (1024,1024), "white"))
@@ -2311,7 +2368,6 @@ if generate_btn:
 
     with st.spinner("PDF/PPTX 구성 중..."):
         contact = build_contact_text(org, name, position, phone, email, output_language)
-        university_logo = get_logo_image(university) if use_logos else None
         pium_logo = get_pium_logo_image() if use_logos else None
         piumlink_logo = get_piumlink_logo_image() if use_logos else None
         brief = compose_tech_brief(data, rep_img, app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img, piumlink_logo)
