@@ -2647,7 +2647,7 @@ def resolve_premium_reference_path() -> str:
     raise FileNotFoundError(f"Premium reference image not found: {PREMIUM_REFERENCE_IMAGE_PATH}")
 
 
-def build_premium_infographic_ai_prompt(data: Dict[str, Any], contact: str) -> str:
+def build_premium_infographic_ai_prompt(data: Dict[str, Any], contact: str, university_logo: Image.Image | None = None) -> str:
     lang = get_lang_code(data.get("language", "ko"))
     apps = data.get("applications", [])[:3]
     market = normalize_market_info(data.get("market_info", {}))
@@ -2671,6 +2671,13 @@ def build_premium_infographic_ai_prompt(data: Dict[str, Any], contact: str) -> s
     years, values, cagr, unit = build_market_series(market)
     end_year = years[-1] if years else _safe_int(market.get('end_year'), 0)
     end_value = format_market_value(values[-1], unit) if values else str(market.get('end_value') or '-')
+    theme = extract_logo_theme(university_logo)
+    brand_primary = theme.get('primary', (0,55,135))
+    brand_secondary = theme.get('secondary', mix(brand_primary, (30,115,210), 0.25))
+    brand_accent = theme.get('accent', mix(brand_primary, (0,175,190), 0.35))
+    brand_primary_hex = rgb_to_hex(brand_primary)
+    brand_secondary_hex = rgb_to_hex(brand_secondary)
+    brand_accent_hex = rgb_to_hex(brand_accent)
     prompt = f"""
 You are given multiple reference images:
 - Image A: premium_infographic_reference.png. Use this as the MAIN design/style reference.
@@ -2682,7 +2689,9 @@ You are given multiple reference images:
 Create ONE premium Korean technology infographic image based on Image A's layout quality and Image B's actual content.
 This is NOT a blank redesign. It is a premium restyling of the current SMK using the supplied assets.
 
-IMPORTANT ASSET RULES:
+IMPORTANT ASSET + COLOR RULES:
+- The university logo's dominant color is the authoritative brand color for the whole premium infographic.
+- Do not let the generic blue reference override the university color identity.
 - Do not hallucinate or redraw the university logo. Use the provided logo reference as-is in the top-left area.
 - Do not hallucinate or redraw the PIUM logo or QR code. Use the provided PIUM+QR card/block reference as-is in the top-right area.
 - Do not create extra QR codes. There should be only one PIUM/QR block in the top-right area.
@@ -2690,7 +2699,14 @@ IMPORTANT ASSET RULES:
 - Integrate these assets naturally into the premium design from the start. Do not leave empty placeholders.
 
 Design target:
-- Visually close to Image A: polished white/light-blue premium brochure, elegant rounded cards, clean blue hierarchy, subtle network/technology background accents.
+- Visually close to Image A in layout quality and premium brochure polish, BUT do NOT copy Image A's blue color palette blindly.
+- The main color palette MUST follow the university logo / Image C brand color.
+- Use this brand palette as the dominant UI color system:
+  - primary: {brand_primary_hex}
+  - secondary: {brand_secondary_hex}
+  - accent: {brand_accent_hex}
+- All major section headers, title color, chart bars, footer, KPI icons, card accent strokes, and application-card accent colors should harmonize with this university brand palette.
+- If the university logo is red, make the premium infographic red/pink/warm-accented like the original university identity; if blue, use blue; if green, use green. Do not force blue for every university.
 - Stronger and more premium than the basic SMK.
 - No awkward overlaps, no duplicated logos/QR, no cropped section panels.
 - Keep all section order: header, applications/products, market status, technology overview, key differentiators, representative drawing, technical competitiveness, IP status, contact footer.
@@ -2784,6 +2800,32 @@ def make_pium_qr_reference_card(pium_logo: Image.Image | None, qr_img: Image.Ima
         card.paste(qr, (55, 145))
     return card
 
+
+
+def make_brand_palette_reference_card(university_logo: Image.Image | None = None) -> Image.Image:
+    """gpt-image-2에 대학 로고 기반 팔레트를 명확하게 전달하기 위한 색상 참조 카드."""
+    theme = extract_logo_theme(university_logo)
+    primary = theme.get("primary", (0,55,135))
+    secondary = theme.get("secondary", mix(primary, (30,115,210), 0.25))
+    accent = theme.get("accent", mix(primary, (0,175,190), 0.35))
+    pale = theme.get("pale", mix(primary, (255,255,255), 0.88))
+    card = Image.new('RGB', (640, 360), (255,255,255))
+    d = ImageDraw.Draw(card)
+    d.rounded_rectangle((12, 12, 628, 348), radius=28, fill=(255,255,255), outline=(210,220,232), width=3)
+    d.text((34, 30), "UNIVERSITY BRAND PALETTE", font=load_font(30, True), fill=ensure_dark(primary))
+    d.text((34, 70), "Use these colors for the premium infographic UI", font=load_font(20, False), fill=(90,98,112))
+    colors = [("PRIMARY", primary), ("SECONDARY", secondary), ("ACCENT", accent), ("SOFT BG", pale)]
+    x = 38
+    for label_text, color in colors:
+        d.rounded_rectangle((x, 120, x+128, 238), radius=18, fill=color, outline=(230,235,242), width=2)
+        d.text((x, 254), label_text, font=load_font(16, True), fill=(40,45,55))
+        d.text((x, 278), rgb_to_hex(color), font=load_font(16, False), fill=(80,88,100))
+        x += 148
+    if university_logo is not None:
+        logo = make_transparent_logo_canvas(university_logo, size=(92,92), padding=0)
+        card.paste(logo, (508, 30), logo if logo.mode == 'RGBA' else None)
+    return card
+
 def overlay_preserved_assets_on_premium_infographic(
     base_img: Image.Image,
     university_logo: Image.Image | None = None,
@@ -2841,7 +2883,7 @@ def generate_reference_based_premium_infographic(
     try:
         client = get_client()
         ref_path = resolve_premium_reference_path()
-        prompt = build_premium_infographic_ai_prompt(data, contact)
+        prompt = build_premium_infographic_ai_prompt(data, contact, university_logo=university_logo)
 
         # Reference images: style reference + current SMK + exact asset references.
         temp_paths.append(ref_path)
@@ -2849,6 +2891,8 @@ def generate_reference_based_premium_infographic(
             temp_paths.append(_save_temp_png(base_smk_img, 'premium_base_smk_'))
         if university_logo is not None:
             temp_paths.append(_save_temp_png(university_logo, 'premium_univ_logo_'))
+        # Explicit brand palette reference: prevents the reference image's blue palette from overriding university-specific colors.
+        temp_paths.append(_save_temp_png(make_brand_palette_reference_card(university_logo), 'premium_brand_palette_'))
         pium_qr_card = make_pium_qr_reference_card(pium_logo, qr_img, piumlink_logo)
         temp_paths.append(_save_temp_png(pium_qr_card, 'premium_pium_qr_'))
         if rep_img is not None:
@@ -3309,7 +3353,7 @@ else:
 
         if st.session_state.hq_image is not None:
             st.markdown("#### 프리미엄 레퍼런스 기반 인포그래픽 이미지")
-            st.caption("번들된 premium_infographic_reference.png를 gpt-image-2로 직접 참고해 프리미엄 인포그래픽을 생성한 결과입니다. 프리미엄 레퍼런스, 현재 SMK, 대학 로고, PIUM+QR 카드, 대표도면을 모두 참조 이미지로 전달해 gpt-image-2가 기존 자산을 자연스럽게 활용하도록 생성합니다. 강제 후합성은 사용하지 않으며, 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
+            st.caption("번들된 premium_infographic_reference.png를 gpt-image-2로 직접 참고해 프리미엄 인포그래픽을 생성한 결과입니다. 프리미엄 레퍼런스, 현재 SMK, 대학 로고, 대학 로고 기반 색상 팔레트, PIUM+QR 카드, 대표도면을 모두 참조 이미지로 전달해 gpt-image-2가 기존 자산과 대학별 브랜드 색상을 자연스럽게 활용하도록 생성합니다. 강제 후합성은 사용하지 않으며, 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
             st.image(st.session_state.hq_image, use_container_width=True)
             d1, d2 = st.columns(2)
             with d1:
