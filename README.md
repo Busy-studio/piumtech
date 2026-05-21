@@ -32,3 +32,8 @@ OPENAI_API_KEY = "sk-본인_API키"
 - 생성 후 대학 로고 / PIUM 로고 / QR 코드 / 대표도면은 원본 그대로 후합성
 - AI 생성 실패 시 기존 고품질 인포그래픽 렌더러로 자동 fallback
 
+
+## Image model routing
+- Asset/application images use `gpt-image-1-mini` by default via `ASSET_IMAGE_MODEL_FIXED`.
+- Reference-based premium infographic generation uses `gpt-image-2` by default via `PREMIUM_IMAGE_MODEL_FIXED`.
+- You can override them with environment variables: `ASSET_IMAGE_MODEL`, `PREMIUM_IMAGE_MODEL`.

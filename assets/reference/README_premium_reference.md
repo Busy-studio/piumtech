@@ -14,3 +14,11 @@
 
 ## 파일 경로
 - `assets/reference/premium_infographic_reference.png`
+
+## Image model routing update
+- 일반 적용분야/제품 이미지 생성: `gpt-image-1-mini`
+- 프리미엄 레퍼런스 기반 최종 인포그래픽 생성: `gpt-image-2`
+- 시장현황 그래프는 이미지 모델이 아니라 코드 기반 막대그래프로 생성하는 방향을 유지합니다.
+- 필요 시 환경변수로 모델명을 바꿀 수 있습니다.
+  - `ASSET_IMAGE_MODEL`
+  - `PREMIUM_IMAGE_MODEL`

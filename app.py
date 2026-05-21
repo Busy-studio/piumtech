@@ -27,7 +27,15 @@ from pptx.enum.shapes import MSO_SHAPE
 from pptx.dml.color import RGBColor
 
 TEXT_MODEL_FIXED = "gpt-4.1-mini"
-IMAGE_MODEL_FIXED = "gpt-image-1"
+
+# Image model routing
+# - Asset/detail images for normal SMK sections: lightweight model
+# - Final premium reference-based infographic: higher-quality model
+ASSET_IMAGE_MODEL_FIXED = os.getenv("ASSET_IMAGE_MODEL", "gpt-image-1-mini")
+PREMIUM_IMAGE_MODEL_FIXED = os.getenv("PREMIUM_IMAGE_MODEL", "gpt-image-2")
+
+# Legacy alias retained only for any older helper that still references IMAGE_MODEL_FIXED.
+IMAGE_MODEL_FIXED = ASSET_IMAGE_MODEL_FIXED
 
 LANGUAGE_OPTIONS = {
     "한국어": "ko",
@@ -958,7 +966,7 @@ Mandatory visual style:
 - professional public-sector technology marketing style
 - no text, no letters, no logos, no watermark
 """
-    result = client.images.generate(model=IMAGE_MODEL_FIXED, prompt=prompt, size="1024x1024")
+    result = client.images.generate(model=ASSET_IMAGE_MODEL_FIXED, prompt=prompt, size="1024x1024")
     img_b64 = result.data[0].b64_json
     img = Image.open(BytesIO(base64.b64decode(img_b64))).convert("RGB")
     img = clean_dark_background(img)
@@ -1000,7 +1008,7 @@ Mandatory unified visual style:
 - centered objects, generous white margin
 - professional public-sector technology marketing style
 """
-    result = client.images.generate(model=IMAGE_MODEL_FIXED, prompt=prompt, size="1536x1024")
+    result = client.images.generate(model=ASSET_IMAGE_MODEL_FIXED, prompt=prompt, size="1536x1024")
     img_b64 = result.data[0].b64_json
     sheet = Image.open(BytesIO(base64.b64decode(img_b64))).convert("RGB")
     sheet = clean_dark_background(sheet)
@@ -2812,7 +2820,7 @@ def generate_reference_based_premium_infographic(
         prompt = build_premium_infographic_ai_prompt(data, contact)
         with open(ref_path, 'rb') as ref_file:
             result = client.images.edit(
-                model=IMAGE_MODEL_FIXED,
+                model=PREMIUM_IMAGE_MODEL_FIXED,
                 image=[ref_file],
                 prompt=prompt,
                 size='1024x1536',
@@ -3255,7 +3263,7 @@ else:
 
         if st.session_state.hq_image is not None:
             st.markdown("#### 프리미엄 레퍼런스 기반 인포그래픽 이미지")
-            st.caption("번들된 premium_infographic_reference.png를 직접 참고해 프리미엄 인포그래픽을 생성한 결과입니다. 대학 로고, PIUM 로고, QR 코드, 대표도면은 생성 후 원본 그대로 다시 합성하여 변형을 최소화합니다. 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
+            st.caption("번들된 premium_infographic_reference.png를 gpt-image-2로 직접 참고해 프리미엄 인포그래픽을 생성한 결과입니다. 대학 로고, PIUM 로고, QR 코드, 대표도면은 생성 후 원본 그대로 다시 합성하여 변형을 최소화합니다. 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
             st.image(st.session_state.hq_image, use_container_width=True)
             d1, d2 = st.columns(2)
             with d1:
