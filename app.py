@@ -15,6 +15,9 @@ import streamlit as st
 from PIL import Image, ImageDraw, ImageFont, ImageStat, ImageEnhance, ImageFilter
 import matplotlib
 matplotlib.use("Agg")
+# Premium infographic style reference asset
+PREMIUM_REFERENCE_IMAGE_PATH = "assets/reference/premium_infographic_reference.png"
+
 import matplotlib.pyplot as plt
 from openai import OpenAI
 from pptx import Presentation
