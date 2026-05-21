@@ -2499,9 +2499,12 @@ def compose_infographic_brief(
     if pium_logo is not None:
         pl = make_transparent_logo_canvas(pium_logo, size=(124, 48), padding=0)
         im.paste(pl, (1052, 36), pl)
-    if piumlink_logo is not None:
-        link = make_transparent_logo_canvas(piumlink_logo, size=(134, 134), padding=0)
-        im.paste(link, (1047, 92), link)
+    qr_source = qr_img or piumlink_logo
+    if qr_source is not None:
+        qr_fit = fit_image(qr_source.convert('RGB') if qr_source.mode != 'RGB' else qr_source, (134, 134), bg=(255,255,255), trim=True)
+        qr_canvas = Image.new('RGB', (134, 134), 'white')
+        qr_canvas.paste(qr_fit, ((134-qr_fit.width)//2, (134-qr_fit.height)//2))
+        im.paste(qr_canvas, (1047, 92))
 
     head_x = 186
     head_w = 794
@@ -2683,6 +2686,56 @@ def resolve_premium_reference_path() -> str:
     raise FileNotFoundError(f"Premium reference image not found: {PREMIUM_REFERENCE_IMAGE_PATH}")
 
 
+
+
+def build_exact_content_payload_for_premium(data: Dict[str, Any], contact: str) -> Dict[str, Any]:
+    """프리미엄 이미지 생성 시 오타/누락을 줄이기 위해 기존 수정 패널의 내용을 구조화 JSON으로 전달."""
+    market = normalize_market_info(data.get("market_info", {}))
+    ip = normalize_ip(data.get("ip", {}))
+    years, values, cagr, unit = build_market_series(market)
+    end_year = years[-1] if years else _safe_int(market.get("end_year"), 0)
+    end_value = format_market_value(values[-1], unit) if values else str(market.get("end_value") or "")
+    return {
+        "basic_info": {
+            "university": data.get("university_display") or data.get("university", ""),
+            "department": data.get("department_display") or data.get("department", ""),
+            "professor": data.get("professor", ""),
+            "technology_title": data.get("marketing_title", ""),
+            "one_line_summary": data.get("subtitle", ""),
+            "original_invention_title": data.get("original_title", ""),
+        },
+        "applications_products": [
+            {
+                "name": app.get("name", ""),
+                "description": app.get("description", ""),
+            }
+            for app in (data.get("applications", [])[:3] or [])
+        ],
+        "market_status": {
+            "display_title": market.get("display_title") or market.get("market_name") or label(get_lang_code(data.get("language", "ko")), "market_default"),
+            "cagr": f"{cagr:.1f}%" if cagr else "",
+            "end_year": end_year,
+            "end_value": end_value,
+            "unit": unit,
+            "source": market_source_text(market),
+        },
+        "technology_overview": data.get("overview", [])[:3],
+        "key_differentiators": data.get("differentiation", [])[:3],
+        "technical_competitiveness": {
+            "current_limitations": data.get("limitations", [])[:2],
+            "technical_advantages": data.get("technical_advantages", [])[:2],
+        },
+        "ip_status": {
+            "invention_title": ip.get("title", "") or data.get("original_title", ""),
+            "application_number": ip.get("application_number", ""),
+            "registration_number": ip.get("registration_number", ""),
+            "application_date": ip.get("application_date", ""),
+            "registration_date": ip.get("registration_date", ""),
+            "applicant": ip.get("applicant", ""),
+        },
+        "contact": contact,
+    }
+
 def build_premium_infographic_ai_prompt(data: Dict[str, Any], contact: str, university_logo: Image.Image | None = None) -> str:
     lang = get_lang_code(data.get("language", "ko"))
     apps = data.get("applications", [])[:3]
@@ -2714,6 +2767,8 @@ def build_premium_infographic_ai_prompt(data: Dict[str, Any], contact: str, univ
     brand_primary_hex = rgb_to_hex(brand_primary)
     brand_secondary_hex = rgb_to_hex(brand_secondary)
     brand_accent_hex = rgb_to_hex(brand_accent)
+    exact_content_payload = build_exact_content_payload_for_premium(data, contact)
+    exact_content_json = json.dumps(exact_content_payload, ensure_ascii=False, indent=2)
     prompt = f"""
 You are given multiple reference images:
 - Image A: premium_infographic_reference.png. Use this as the MAIN design/style reference.
@@ -2732,7 +2787,7 @@ IMPORTANT ASSET + COLOR RULES:
 - Do not hallucinate or redraw the PIUM logo or QR code. Use the provided PIUM+QR card/block reference as-is in the top-right area.
 - Do not create extra QR codes. There should be only one PIUM/QR block in the top-right area.
 - Do not replace the representative drawing. Use the provided representative drawing in the representative drawing section.
-- Integrate these assets naturally into the premium design from the start. Do not leave empty placeholders.
+- Keep the layout clean around the top-left logo area and top-right PIUM+QR card area so the original assets can be composited sharply if needed. Do not duplicate or distort those assets.
 
 Design target:
 - Visually close to Image A in layout quality and premium brochure polish, BUT do NOT copy Image A's blue color palette blindly.
@@ -2752,6 +2807,14 @@ Design target:
 - Technical competitiveness should show current limitations and technical advantages clearly.
 - IP status should be a neat table.
 - Contact should be a premium footer bar.
+
+EXACT_CONTENT_JSON:
+The following JSON is the authoritative source of all text and factual content.
+Use these values exactly wherever possible. Do not invent replacement text. Do not paraphrase patent numbers, dates, names, phone numbers, emails, or invention titles.
+If space is limited, shorten only descriptive body sentences, but preserve the meaning and keep all names/numbers/emails exactly.
+```json
+{exact_content_json}
+```
 
 Text/content to use:
 Header line: {header_kicker}
@@ -2793,8 +2856,9 @@ Readability rules:
 - Keep Korean text readable and professionally typeset.
 - Avoid fake random Korean text.
 - Avoid text truncation where possible.
-- Preserve numbers, emails, phone numbers, and patent numbers as accurately as possible.
-- Use concise Korean where needed for layout, but do not change the meaning.
+- Preserve numbers, emails, phone numbers, names, department names, university names, invention titles, application numbers, registration numbers, application dates, and registration dates EXACTLY from EXACT_CONTENT_JSON.
+- Do not create pseudo-Korean or approximate text. Use the provided JSON values.
+- Use concise Korean only for long descriptive body text when needed for layout, but do not change the meaning.
 """
     return prompt
 
@@ -2862,38 +2926,92 @@ def make_brand_palette_reference_card(university_logo: Image.Image | None = None
         card.paste(logo, (508, 30), logo if logo.mode == 'RGBA' else None)
     return card
 
+
+
+def _resample_qr(img: Image.Image, size: tuple[int,int]) -> Image.Image:
+    src = img.convert('RGB')
+    return ImageOps.contain(src, size, Image.NEAREST)
+
+
+def _resample_logo(img: Image.Image, size: tuple[int,int]) -> Image.Image:
+    if img.mode != 'RGBA':
+        src = img.convert('RGBA')
+    else:
+        src = img.copy()
+    fitted = make_transparent_logo_canvas(src, size=size, padding=0)
+    # very light sharpening improves small text/logo edges after downscaling
+    return fitted.filter(ImageFilter.UnsharpMask(radius=0.8, percent=110, threshold=2))
+
+
+def composite_brand_assets_on_final_image(
+    final_img: Image.Image,
+    university_logo: Image.Image | None = None,
+    pium_logo: Image.Image | None = None,
+    qr_img: Image.Image | None = None,
+    piumlink_logo: Image.Image | None = None,
+) -> Image.Image:
+    """최종 결과물 위에 원본 대학 로고 / PIUM 로고 / QR 을 마지막 단계에서 다시 정합 합성.
+    목적: 로고/QR의 선명도 보존, 스캔 안정성 확보.
+    레이아웃은 현재 compose_infographic_brief의 기준 좌표를 비율로 환산해 정합한다.
+    """
+    im = final_img.convert('RGBA').copy()
+    W, H = im.size
+    sx = W / 1240.0
+    sy = H / 1754.0
+    d = ImageDraw.Draw(im)
+    line = (196, 212, 228, 255)
+    # top-left university logo area
+    if university_logo is not None:
+        lx, ly = int(round(28*sx)), int(round(24*sy))
+        lw, lh = int(round(118*sx)), int(round(118*sy))
+        # clear only the logo content region, preserving the surrounding layout
+        d.rounded_rectangle((lx-6, ly-6, lx+lw+6, ly+lh+6), radius=max(12, int(18*sx)), fill=(255,255,255,0))
+        logo = _resample_logo(university_logo, (lw, lh))
+        im.paste(logo, (lx, ly), logo if logo.mode == 'RGBA' else None)
+
+    # top-right PIUM + QR card area
+    qx1, qy1 = int(round(1016*sx)), int(round(20*sy))
+    qx2, qy2 = int(round(1210*sx)), int(round(264*sy))
+    # redraw card cleanly for crisp contents while respecting layout position
+    d.rounded_rectangle((qx1, qy1, qx2, qy2), radius=max(18, int(24*sx)), fill=(255,255,255,255), outline=line, width=max(2, int(2*sx)))
+    if pium_logo is not None:
+        pl = _resample_logo(pium_logo, (int(round(124*sx)), int(round(48*sy))))
+        px, py = int(round(1052*sx)), int(round(36*sy))
+        im.paste(pl, (px, py), pl if pl.mode == 'RGBA' else None)
+    qr_source = qr_img or piumlink_logo
+    if qr_source is not None:
+        # prefer extracted pure QR image; if the fallback is a broader PIUMLINK image,
+        # fit it tightly but still use nearest-neighbor for crisp square edges.
+        qrs = _resample_qr(qr_source, (int(round(134*sx)), int(round(134*sy))))
+        # center if the aspect result is smaller than target
+        bg = Image.new('RGB', (int(round(134*sx)), int(round(134*sy))), 'white')
+        bg.paste(qrs, ((bg.width-qrs.width)//2, (bg.height-qrs.height)//2))
+        qx, qy = int(round(1047*sx)), int(round(92*sy))
+        im.paste(bg, (qx, qy))
+    return im.convert('RGB')
+
 def overlay_preserved_assets_on_premium_infographic(
     base_img: Image.Image,
     university_logo: Image.Image | None = None,
     pium_logo: Image.Image | None = None,
     qr_img: Image.Image | None = None,
     rep_img: Image.Image | None = None,
+    piumlink_logo: Image.Image | None = None,
 ) -> Image.Image:
-    im = base_img.convert('RGB').copy()
-    target_w, target_h = 1024, 1536
-    if im.size != (target_w, target_h):
-        im = im.resize((target_w, target_h), Image.LANCZOS)
+    im = composite_brand_assets_on_final_image(
+        base_img,
+        university_logo=university_logo,
+        pium_logo=pium_logo,
+        qr_img=qr_img,
+        piumlink_logo=piumlink_logo,
+    )
     d = ImageDraw.Draw(im)
     line = (200, 214, 230)
-
-    if university_logo is not None:
-        d.rounded_rectangle((20, 14, 112, 110), radius=18, fill=(255,255,255))
-        logo = make_transparent_logo_canvas(university_logo, size=(88, 88), padding=0)
-        im.paste(logo, (24, 18), logo if logo.mode == 'RGBA' else None)
-
-    # top-right card for PIUM + QR
-    d.rounded_rectangle((838, 18, 993, 222), radius=22, fill=(255,255,255), outline=line, width=2)
-    if pium_logo is not None:
-        pl = make_transparent_logo_canvas(pium_logo, size=(120, 38), padding=0)
-        im.paste(pl, (856, 32), pl if pl.mode == 'RGBA' else None)
-    if qr_img is not None:
-        qr = fit_image(qr_img.convert('RGB'), (118, 118), bg=(255,255,255), trim=True)
-        im.paste(qr, (856, 82))
-
-    # representative drawing exact overlay
     if rep_img is not None:
-        rep_box = (34, 975, 424, 1282)
-        d.rounded_rectangle(rep_box, radius=20, fill=(255,255,255), outline=line, width=2)
+        sx = im.width / 1240.0
+        sy = im.height / 1754.0
+        rep_box = (int(round(34*sx)), int(round(975*sy)), int(round(424*sx)), int(round(1282*sy)))
+        d.rounded_rectangle(rep_box, radius=max(18, int(20*sx)), fill=(255,255,255), outline=line, width=max(2, int(2*sx)))
         rep = fit_image(rep_img.convert('RGB'), (rep_box[2]-rep_box[0]-30, rep_box[3]-rep_box[1]-32), bg=(255,255,255), trim=True)
         im.paste(rep, (rep_box[0] + (rep_box[2]-rep_box[0]-rep.width)//2, rep_box[1] + (rep_box[3]-rep_box[1]-rep.height)//2))
     return im
@@ -2943,7 +3061,17 @@ def generate_reference_based_premium_infographic(
                 size='1024x1536',
             )
         raw = _extract_generated_image_bytes(result)
-        return Image.open(BytesIO(raw)).convert('RGB')
+        generated = Image.open(BytesIO(raw)).convert('RGB')
+        # Final-step crisp asset compositing for logo / PIUM / QR preservation
+        generated = overlay_preserved_assets_on_premium_infographic(
+            generated,
+            university_logo=university_logo,
+            pium_logo=pium_logo,
+            qr_img=qr_img,
+            rep_img=rep_img,
+            piumlink_logo=piumlink_logo,
+        )
+        return generated
     except Exception:
         # fallback: preserve operational stability
         return make_high_quality_infographic_image(
@@ -3008,20 +3136,14 @@ def make_high_quality_infographic_image(
     hq = ImageEnhance.Sharpness(hq).enhance(1.10)
     hq = hq.filter(ImageFilter.UnsharpMask(radius=1.0, percent=75, threshold=2))
 
-    # 로고/QR은 필터 영향 없이 원본 이미지를 다시 삽입해 선명도와 형태를 보존
-    if university_logo is not None:
-        uni_logo_size = 118 * scale
-        left_logo = make_transparent_logo_canvas(university_logo, size=(uni_logo_size, uni_logo_size), padding=0)
-        hq.paste(left_logo, (28 * scale, 24 * scale), left_logo if left_logo.mode == 'RGBA' else None)
-
-    if pium_logo is not None:
-        pium_canvas = make_transparent_logo_canvas(pium_logo, size=(124 * scale, 48 * scale), padding=0)
-        hq.paste(pium_canvas, (1052 * scale, 36 * scale), pium_canvas if pium_canvas.mode == 'RGBA' else None)
-
-    if piumlink_logo is not None:
-        link_size = 134 * scale
-        link = make_transparent_logo_canvas(piumlink_logo, size=(link_size, link_size), padding=0)
-        hq.paste(link, (1047 * scale, 92 * scale), link if link.mode == 'RGBA' else None)
+    # 로고/QR은 최종 해상도 이미지에서 원본을 다시 정합 합성해 선명도와 형태를 보존
+    hq = composite_brand_assets_on_final_image(
+        hq,
+        university_logo=university_logo,
+        pium_logo=pium_logo,
+        qr_img=qr_img,
+        piumlink_logo=piumlink_logo,
+    )
 
     return hq
 
@@ -3387,7 +3509,7 @@ else:
 
         if st.session_state.hq_image is not None:
             st.markdown("#### 프리미엄 레퍼런스 기반 인포그래픽 이미지")
-            st.caption("번들된 premium_infographic_reference.png를 gpt-image-2로 직접 참고해 프리미엄 인포그래픽을 생성한 결과입니다. 프리미엄 레퍼런스, 현재 SMK, 대학 로고, 대학 로고 기반 색상 팔레트, PIUM+QR 카드, 대표도면을 모두 참조 이미지로 전달해 gpt-image-2가 기존 자산과 대학별 브랜드 색상을 자연스럽게 활용하도록 생성합니다. 강제 후합성은 사용하지 않으며, 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
+            st.caption("번들된 premium_infographic_reference.png를 gpt-image-2로 직접 참고해 프리미엄 인포그래픽을 생성한 결과입니다. 프리미엄 레퍼런스, 현재 SMK, 대학 로고, 대학 로고 기반 색상 팔레트, PIUM+QR 카드, 대표도면과 함께 기존 수정 패널의 전체 텍스트 데이터를 EXACT_CONTENT_JSON으로 전달해 gpt-image-2가 기존 자산·브랜드 색상·정확한 텍스트를 우선 활용하도록 생성합니다. 강제 후합성은 사용하지 않으며, 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
             st.image(st.session_state.hq_image, use_container_width=True)
             d1, d2 = st.columns(2)
             with d1:
