@@ -2096,15 +2096,51 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
 # -----------------------------------------------------
 # PDF / PPTX
 # -----------------------------------------------------
+def _image_to_a4_pdf_bytes(img: Image.Image, dpi: int = 300) -> bytes:
+    """이미지 1장을 실제 A4 페이지 크기의 고해상도 PDF로 저장한다.
+
+    PIL의 img.save(..., "PDF", resolution=300)는 이미지 픽셀/dpi 값으로
+    PDF 페이지 크기를 계산하기 때문에, 1024x1536 이미지는 약 3.4x5.1 inch의
+    작은 PDF 페이지가 되어 뷰어에서 확대 시 흐려 보일 수 있다.
+    이 함수는 PDF 페이지를 A4 포인트 크기로 고정하고, 이미지를 A4 안에
+    300dpi급 픽셀로 리샘플링한 뒤 PNG 스트림으로 삽입한다.
+    """
+    a4_w_pt, a4_h_pt = 595.2756, 841.8898  # A4 in PDF points
+    src = img.convert("RGB")
+    src_ratio = src.width / max(1, src.height)
+    page_ratio = a4_w_pt / a4_h_pt
+
+    if src_ratio >= page_ratio:
+        draw_w_pt = a4_w_pt
+        draw_h_pt = a4_w_pt / src_ratio
+    else:
+        draw_h_pt = a4_h_pt
+        draw_w_pt = a4_h_pt * src_ratio
+
+    x0 = (a4_w_pt - draw_w_pt) / 2
+    y0 = (a4_h_pt - draw_h_pt) / 2
+    rect = fitz.Rect(x0, y0, x0 + draw_w_pt, y0 + draw_h_pt)
+
+    target_w_px = max(1, int(round(draw_w_pt / 72 * dpi)))
+    target_h_px = max(1, int(round(draw_h_pt / 72 * dpi)))
+    resampled = src.resize((target_w_px, target_h_px), Image.LANCZOS)
+    resampled = ImageEnhance.Sharpness(resampled).enhance(1.04)
+
+    png = BytesIO()
+    resampled.save(png, format="PNG", optimize=True)
+    png_bytes = png.getvalue()
+
+    doc = fitz.open()
+    page = doc.new_page(width=a4_w_pt, height=a4_h_pt)
+    page.insert_image(rect, stream=png_bytes, keep_proportion=True)
+    out = doc.tobytes(deflate=True, garbage=4)
+    doc.close()
+    return out
+
+
 def make_pdf_bytes_from_image(img: Image.Image) -> bytes:
-    a4_w, a4_h = 1240, 1754
-    page = Image.new("RGB", (a4_w, a4_h), "white")
-    img = img.convert("RGB")
-    img.thumbnail((a4_w, a4_h))
-    page.paste(img, ((a4_w-img.width)//2, (a4_h-img.height)//2))
-    bio = BytesIO()
-    page.save(bio, "PDF", resolution=150.0)
-    return bio.getvalue()
+    # 기본 SMK PDF도 실제 A4 페이지로 저장해 PDF 뷰어 확대 시 품질 저하를 줄인다.
+    return _image_to_a4_pdf_bytes(img, dpi=300)
 
 
 
@@ -2991,10 +3027,8 @@ def make_high_quality_infographic_image(
 
 
 def make_pdf_bytes_from_hq_image(img: Image.Image) -> bytes:
-    """고품질 이미지형 PDF 저장. PNG와 같은 시각 결과를 PDF로 보존한다."""
-    bio = BytesIO()
-    img.convert("RGB").save(bio, "PDF", resolution=300.0)
-    return bio.getvalue()
+    """프리미엄 인포그래픽 PDF를 실제 A4 300dpi급 이미지형 PDF로 저장한다."""
+    return _image_to_a4_pdf_bytes(img, dpi=300)
 
 
 def make_png_bytes_from_image(img: Image.Image) -> bytes:
