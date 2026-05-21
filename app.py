@@ -2624,6 +2624,222 @@ def compose_infographic_brief(
     return im
 
 
+
+
+def resolve_premium_reference_path() -> str:
+    candidates = []
+    if "__file__" in globals():
+        candidates.append(os.path.join(os.path.dirname(__file__), PREMIUM_REFERENCE_IMAGE_PATH))
+    candidates.append(os.path.join(os.getcwd(), PREMIUM_REFERENCE_IMAGE_PATH))
+    candidates.append(PREMIUM_REFERENCE_IMAGE_PATH)
+    for p in candidates:
+        if p and os.path.exists(p):
+            return p
+    raise FileNotFoundError(f"Premium reference image not found: {PREMIUM_REFERENCE_IMAGE_PATH}")
+
+
+def build_premium_infographic_ai_prompt(data: Dict[str, Any], contact: str) -> str:
+    lang = get_lang_code(data.get("language", "ko"))
+    apps = data.get("applications", [])[:3]
+    market = normalize_market_info(data.get("market_info", {}))
+    app_lines = []
+    for i, app in enumerate(apps, 1):
+        app_lines.append(f"- 카드{i} 제목: {app.get('name','')}\n  카드{i} 설명: {app.get('description','')}")
+    apps_text = "\n".join(app_lines)
+    overview_text = "\n".join([f"- {x}" for x in data.get("overview", [])[:3]])
+    diff_text = "\n".join([f"- {x}" for x in data.get("differentiation", [])[:3]])
+    lim_text = "\n".join([f"- {x}" for x in data.get("limitations", [])[:2]])
+    adv_text = "\n".join([f"- {x}" for x in data.get("technical_advantages", [])[:2]])
+    ip = normalize_ip(data.get("ip", {}))
+    title = data.get('marketing_title', '')
+    subtitle = data.get('subtitle', '')
+    university = data.get('university_display') or data.get('university', '')
+    department = data.get('department_display') or data.get('department', '')
+    professor = data.get('professor', '')
+    prof_suffix = label(lang, 'prof_suffix')
+    header_kicker = f"PIUM Tech Offer x {university} | {department} | {professor} {prof_suffix}"
+    market_title = market.get('display_title') or market.get('market_name') or label(lang, 'market_default')
+    years, values, cagr, unit = build_market_series(market)
+    end_year = years[-1] if years else _safe_int(market.get('end_year'), 0)
+    end_value = format_market_value(values[-1], unit) if values else str(market.get('end_value') or '-')
+    prompt = f"""
+Using Image A as the PRIMARY visual reference, generate a premium one-page university technology infographic in the same overall style, cleanliness, hierarchy, and section composition.
+
+Critical goals:
+- Make the result visually close to Image A, not just vaguely inspired by it.
+- Keep a polished premium infographic style for a Korean university technology marketing sheet.
+- Maintain the overall section structure seen in Image A: header, 3 application cards, market chart area, technology overview, key differentiators, representative drawing panel, technical competitiveness, IP table, contact footer.
+- Use a portrait brochure layout similar to A4.
+- Use the university logo color family as the main accent direction when possible, but do not redraw or distort any original logos.
+
+ABSOLUTE PRESERVATION RULES:
+- Do NOT invent, redraw, restyle, or alter the university logo.
+- Do NOT invent, redraw, restyle, or alter the PIUM logo.
+- Do NOT invent, redraw, restyle, or alter the QR code.
+- Do NOT insert fake QR patterns.
+- Reserve clean areas for these original assets to be overlaid later.
+- Also leave the representative drawing area clean and layout-ready for later overlay.
+
+Layout instructions:
+- Top left: leave a clean reserved area for the university logo.
+- Top right: leave a clean reserved card area for the PIUM logo and QR code.
+- Main title should be large and prominent.
+- Subtitle should appear directly under the title.
+- The 3 application/product cards should be FULL COLOR, premium, easy to distinguish, and more visually rich than simple flat icons.
+- Market section should use a YEAR-BY-YEAR BAR CHART, not a line chart.
+- Technology overview and key differentiators should use clean list-card rows with important keywords visually emphasized.
+- Technical competitiveness should clearly separate current limitations and technical advantages.
+- IP status should be a structured table.
+- Contact should be a footer bar.
+
+Important text/content to reflect accurately:
+Header line: {header_kicker}
+Main title: {title}
+Subtitle: {subtitle}
+
+Applications / Products:
+{apps_text}
+
+Market section title: {market_title}
+Representative market data summary:
+- CAGR: {cagr:.1f}%
+- End year: {end_year}
+- End value: {end_value}
+- Unit: {unit}
+- Source: {market_source_text(market)}
+
+Technology overview:
+{overview_text}
+
+Key differentiators:
+{diff_text}
+
+Current limitations:
+{lim_text}
+
+Technical advantages:
+{adv_text}
+
+IP section:
+- Invention title: {ip.get('title','') or data.get('original_title','')}
+- Application/Registration number: {ip.get('application_number','')} / {ip.get('registration_number','')}
+- Application/Registration date: {ip.get('application_date','')} / {ip.get('registration_date','')}
+
+Contact footer:
+{contact}
+
+Text rendering rules:
+- Keep the same language as the provided content.
+- Do not hallucinate different technology details.
+- Prefer concise, clean typesetting.
+- Important keywords may be bold or accent-colored.
+- Avoid overcrowding and truncation.
+
+Asset preservation rules again:
+- Leave the top-left logo area visually clean.
+- Leave the top-right PIUM/QR card visually clean.
+- Leave the representative drawing panel visually clean enough for later exact overlay.
+- Overall result should feel like a finished premium infographic based strongly on Image A.
+"""
+    return prompt
+
+
+def _extract_generated_image_bytes(image_result: Any) -> bytes:
+    # For images.generate / images.edit style responses
+    data = getattr(image_result, 'data', None)
+    if data:
+        item = data[0]
+        b64 = getattr(item, 'b64_json', None) or (item.get('b64_json') if isinstance(item, dict) else None)
+        if b64:
+            return base64.b64decode(b64)
+    raise ValueError('No generated image bytes found in response')
+
+
+def overlay_preserved_assets_on_premium_infographic(
+    base_img: Image.Image,
+    university_logo: Image.Image | None = None,
+    pium_logo: Image.Image | None = None,
+    qr_img: Image.Image | None = None,
+    rep_img: Image.Image | None = None,
+) -> Image.Image:
+    im = base_img.convert('RGB').copy()
+    target_w, target_h = 1024, 1536
+    if im.size != (target_w, target_h):
+        im = im.resize((target_w, target_h), Image.LANCZOS)
+    d = ImageDraw.Draw(im)
+    line = (200, 214, 230)
+
+    if university_logo is not None:
+        d.rounded_rectangle((20, 14, 112, 110), radius=18, fill=(255,255,255))
+        logo = make_transparent_logo_canvas(university_logo, size=(88, 88), padding=0)
+        im.paste(logo, (24, 18), logo if logo.mode == 'RGBA' else None)
+
+    # top-right card for PIUM + QR
+    d.rounded_rectangle((838, 18, 993, 222), radius=22, fill=(255,255,255), outline=line, width=2)
+    if pium_logo is not None:
+        pl = make_transparent_logo_canvas(pium_logo, size=(120, 38), padding=0)
+        im.paste(pl, (856, 32), pl if pl.mode == 'RGBA' else None)
+    if qr_img is not None:
+        qr = fit_image(qr_img.convert('RGB'), (118, 118), bg=(255,255,255), trim=True)
+        im.paste(qr, (856, 82))
+
+    # representative drawing exact overlay
+    if rep_img is not None:
+        rep_box = (34, 975, 424, 1282)
+        d.rounded_rectangle(rep_box, radius=20, fill=(255,255,255), outline=line, width=2)
+        rep = fit_image(rep_img.convert('RGB'), (rep_box[2]-rep_box[0]-30, rep_box[3]-rep_box[1]-32), bg=(255,255,255), trim=True)
+        im.paste(rep, (rep_box[0] + (rep_box[2]-rep_box[0]-rep.width)//2, rep_box[1] + (rep_box[3]-rep_box[1]-rep.height)//2))
+    return im
+
+
+def generate_reference_based_premium_infographic(
+    data: Dict[str, Any],
+    rep_img: Image.Image,
+    app_imgs: List[Image.Image],
+    contact: str,
+    university_logo: Image.Image | None = None,
+    pium_logo: Image.Image | None = None,
+    qr_img: Image.Image | None = None,
+    piumlink_logo: Image.Image | None = None,
+) -> Image.Image:
+    """레퍼런스 이미지를 직접 참고해 프리미엄 인포그래픽을 생성하고,
+    로고/QR/대표도면은 원본 그대로 후합성한다.
+    실패 시 규칙 기반 렌더러로 안전하게 fallback한다.
+    """
+    try:
+        client = get_client()
+        ref_path = resolve_premium_reference_path()
+        prompt = build_premium_infographic_ai_prompt(data, contact)
+        with open(ref_path, 'rb') as ref_file:
+            result = client.images.edit(
+                model=IMAGE_MODEL_FIXED,
+                image=[ref_file],
+                prompt=prompt,
+                size='1024x1536',
+            )
+        raw = _extract_generated_image_bytes(result)
+        base_img = Image.open(BytesIO(raw)).convert('RGB')
+        final_img = overlay_preserved_assets_on_premium_infographic(
+            base_img,
+            university_logo=university_logo,
+            pium_logo=pium_logo,
+            qr_img=qr_img,
+            rep_img=rep_img,
+        )
+        return final_img
+    except Exception:
+        # fallback: preserve operational stability
+        return make_high_quality_infographic_image(
+            data,
+            rep_img,
+            app_imgs,
+            contact,
+            university_logo=university_logo,
+            pium_logo=pium_logo,
+            qr_img=qr_img,
+            piumlink_logo=piumlink_logo,
+        )
+
 def make_high_quality_infographic_image(
 
 
@@ -3018,12 +3234,12 @@ else:
         st.subheader("SMK 미리보기")
         st.image(st.session_state.brief_image, use_container_width=True)
 
-        if st.button("고품질 이미지/PDF로 변환", use_container_width=True):
-            with st.spinner("최종 SMK를 고품질 인포그래픽 이미지와 PDF로 변환 중..."):
+        if st.button("프리미엄 레퍼런스 기반 이미지/PDF로 변환", use_container_width=True):
+            with st.spinner("레퍼런스 기반 프리미엄 인포그래픽을 생성 중..."):
                 university_logo = get_logo_image(university) if use_logos else None
                 pium_logo = get_pium_logo_image() if use_logos else None
                 piumlink_logo = get_piumlink_logo_image() if use_logos else None
-                hq_image = make_high_quality_infographic_image(
+                hq_image = generate_reference_based_premium_infographic(
                     st.session_state.data,
                     st.session_state.rep_img,
                     st.session_state.app_imgs,
@@ -3038,13 +3254,13 @@ else:
                 st.session_state.hq_pdf_bytes = make_pdf_bytes_from_hq_image(hq_image)
 
         if st.session_state.hq_image is not None:
-            st.markdown("#### 고품질 인포그래픽 이미지")
-            st.caption("기본 SMK 레이아웃과 정보 구조는 유지하고, 배포용 PNG/PDF에 맞게 선명도와 출력 품질만 안정적으로 보정한 결과입니다. 대학 로고, PIUM 센터 로고, 우측 QR/로고 이미지는 원본 형태를 유지합니다.")
+            st.markdown("#### 프리미엄 레퍼런스 기반 인포그래픽 이미지")
+            st.caption("번들된 premium_infographic_reference.png를 직접 참고해 프리미엄 인포그래픽을 생성한 결과입니다. 대학 로고, PIUM 로고, QR 코드, 대표도면은 생성 후 원본 그대로 다시 합성하여 변형을 최소화합니다. 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
             st.image(st.session_state.hq_image, use_container_width=True)
             d1, d2 = st.columns(2)
             with d1:
                 st.download_button(
-                    "고품질 PNG 다운로드",
+                    "프리미엄 PNG 다운로드",
                     st.session_state.hq_png_bytes,
                     build_export_basename(st.session_state.data)+"_infographic.png",
                     "image/png",
@@ -3052,7 +3268,7 @@ else:
                 )
             with d2:
                 st.download_button(
-                    "고품질 PDF 다운로드",
+                    "프리미엄 PDF 다운로드",
                     st.session_state.hq_pdf_bytes,
                     build_export_basename(st.session_state.data)+"_infographic.pdf",
                     "application/pdf",

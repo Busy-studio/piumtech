@@ -25,3 +25,10 @@ OPENAI_API_KEY = "sk-본인_API키"
 - `packages.txt`
 - `.streamlit/secrets.toml.example`
 - `.gitignore`
+
+## Premium Reference Mode
+- 번들된 `assets/reference/premium_infographic_reference.png` 를 기준 레퍼런스로 사용
+- "프리미엄 레퍼런스 기반 이미지/PDF로 변환" 버튼 추가
+- 생성 후 대학 로고 / PIUM 로고 / QR 코드 / 대표도면은 원본 그대로 후합성
+- AI 생성 실패 시 기존 고품질 인포그래픽 렌더러로 자동 fallback
+
