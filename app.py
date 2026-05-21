@@ -7,6 +7,7 @@ import tempfile
 import zipfile
 import shutil
 import requests
+from contextlib import ExitStack
 from io import BytesIO
 from typing import Any, Dict, List, Tuple
 
@@ -2671,36 +2672,36 @@ def build_premium_infographic_ai_prompt(data: Dict[str, Any], contact: str) -> s
     end_year = years[-1] if years else _safe_int(market.get('end_year'), 0)
     end_value = format_market_value(values[-1], unit) if values else str(market.get('end_value') or '-')
     prompt = f"""
-Using Image A as the PRIMARY visual reference, generate a premium one-page university technology infographic in the same overall style, cleanliness, hierarchy, and section composition.
+You are given multiple reference images:
+- Image A: premium_infographic_reference.png. Use this as the MAIN design/style reference.
+- Image B: the current generated SMK page. Use this for the actual content, existing logos/QR block placement, representative drawing context, and information architecture.
+- Image C: the original university logo asset. Use this exact logo visually; do not redraw it into a different logo.
+- Image D: the original PIUM + QR reference card/block. Use this exact PIUM/QR block visually; do not create a second fake QR and do not duplicate the QR elsewhere.
+- Image E: the original representative drawing. Use this drawing visually as the representative drawing panel; do not replace it with a different diagram.
 
-Critical goals:
-- Make the result visually close to Image A, not just vaguely inspired by it.
-- Keep a polished premium infographic style for a Korean university technology marketing sheet.
-- Maintain the overall section structure seen in Image A: header, 3 application cards, market chart area, technology overview, key differentiators, representative drawing panel, technical competitiveness, IP table, contact footer.
-- Use a portrait brochure layout similar to A4.
-- Use the university logo color family as the main accent direction when possible, but do not redraw or distort any original logos.
+Create ONE premium Korean technology infographic image based on Image A's layout quality and Image B's actual content.
+This is NOT a blank redesign. It is a premium restyling of the current SMK using the supplied assets.
 
-ABSOLUTE PRESERVATION RULES:
-- Do NOT invent, redraw, restyle, or alter the university logo.
-- Do NOT invent, redraw, restyle, or alter the PIUM logo.
-- Do NOT invent, redraw, restyle, or alter the QR code.
-- Do NOT insert fake QR patterns.
-- Reserve clean areas for these original assets to be overlaid later.
-- Also leave the representative drawing area clean and layout-ready for later overlay.
+IMPORTANT ASSET RULES:
+- Do not hallucinate or redraw the university logo. Use the provided logo reference as-is in the top-left area.
+- Do not hallucinate or redraw the PIUM logo or QR code. Use the provided PIUM+QR card/block reference as-is in the top-right area.
+- Do not create extra QR codes. There should be only one PIUM/QR block in the top-right area.
+- Do not replace the representative drawing. Use the provided representative drawing in the representative drawing section.
+- Integrate these assets naturally into the premium design from the start. Do not leave empty placeholders.
 
-Layout instructions:
-- Top left: leave a clean reserved area for the university logo.
-- Top right: leave a clean reserved card area for the PIUM logo and QR code.
-- Main title should be large and prominent.
-- Subtitle should appear directly under the title.
-- The 3 application/product cards should be FULL COLOR, premium, easy to distinguish, and more visually rich than simple flat icons.
-- Market section should use a YEAR-BY-YEAR BAR CHART, not a line chart.
-- Technology overview and key differentiators should use clean list-card rows with important keywords visually emphasized.
-- Technical competitiveness should clearly separate current limitations and technical advantages.
-- IP status should be a structured table.
-- Contact should be a footer bar.
+Design target:
+- Visually close to Image A: polished white/light-blue premium brochure, elegant rounded cards, clean blue hierarchy, subtle network/technology background accents.
+- Stronger and more premium than the basic SMK.
+- No awkward overlaps, no duplicated logos/QR, no cropped section panels.
+- Keep all section order: header, applications/products, market status, technology overview, key differentiators, representative drawing, technical competitiveness, IP status, contact footer.
+- Application/product cards should be full-color and visually rich.
+- Market status should use a year-by-year bar chart with KPI cards.
+- Overview and differentiators should use clean row cards with key phrases emphasized.
+- Technical competitiveness should show current limitations and technical advantages clearly.
+- IP status should be a neat table.
+- Contact should be a premium footer bar.
 
-Important text/content to reflect accurately:
+Text/content to use:
 Header line: {header_kicker}
 Main title: {title}
 Subtitle: {subtitle}
@@ -2736,18 +2737,12 @@ IP section:
 Contact footer:
 {contact}
 
-Text rendering rules:
-- Keep the same language as the provided content.
-- Do not hallucinate different technology details.
-- Prefer concise, clean typesetting.
-- Important keywords may be bold or accent-colored.
-- Avoid overcrowding and truncation.
-
-Asset preservation rules again:
-- Leave the top-left logo area visually clean.
-- Leave the top-right PIUM/QR card visually clean.
-- Leave the representative drawing panel visually clean enough for later exact overlay.
-- Overall result should feel like a finished premium infographic based strongly on Image A.
+Readability rules:
+- Keep Korean text readable and professionally typeset.
+- Avoid fake random Korean text.
+- Avoid text truncation where possible.
+- Preserve numbers, emails, phone numbers, and patent numbers as accurately as possible.
+- Use concise Korean where needed for layout, but do not change the meaning.
 """
     return prompt
 
@@ -2762,6 +2757,32 @@ def _extract_generated_image_bytes(image_result: Any) -> bytes:
             return base64.b64decode(b64)
     raise ValueError('No generated image bytes found in response')
 
+
+
+
+def _save_temp_png(img: Image.Image, prefix: str) -> str:
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.png', prefix=prefix)
+    tmp.close()
+    img.convert('RGBA' if img.mode == 'RGBA' else 'RGB').save(tmp.name, 'PNG')
+    return tmp.name
+
+
+def make_pium_qr_reference_card(pium_logo: Image.Image | None, qr_img: Image.Image | None, piumlink_logo: Image.Image | None = None) -> Image.Image:
+    """프리미엄 AI 생성에 reference로 넘길 PIUM+QR 카드 블록.
+    후합성용이 아니라, 모델이 원본 블록을 보고 자연스럽게 활용하도록 제공하는 자산이다.
+    """
+    card = Image.new('RGB', (360, 480), (255, 255, 255))
+    d = ImageDraw.Draw(card)
+    d.rounded_rectangle((8, 8, 352, 472), radius=34, fill=(255,255,255), outline=(190, 210, 232), width=4)
+    if pium_logo is not None:
+        logo = make_transparent_logo_canvas(pium_logo, size=(250, 88), padding=0)
+        card.paste(logo, (55, 34), logo if logo.mode == 'RGBA' else None)
+    # QR source priority: extracted QR > PIUMLINK bundled image
+    qr_source = qr_img or piumlink_logo
+    if qr_source is not None:
+        qr = fit_image(qr_source.convert('RGB'), (250, 250), bg=(255,255,255), trim=True)
+        card.paste(qr, (55, 145))
+    return card
 
 def overlay_preserved_assets_on_premium_infographic(
     base_img: Image.Image,
@@ -2809,32 +2830,40 @@ def generate_reference_based_premium_infographic(
     pium_logo: Image.Image | None = None,
     qr_img: Image.Image | None = None,
     piumlink_logo: Image.Image | None = None,
+    base_smk_img: Image.Image | None = None,
 ) -> Image.Image:
-    """레퍼런스 이미지를 직접 참고해 프리미엄 인포그래픽을 생성하고,
-    로고/QR/대표도면은 원본 그대로 후합성한다.
-    실패 시 규칙 기반 렌더러로 안전하게 fallback한다.
+    """레퍼런스 기반 프리미엄 인포그래픽 생성.
+    후합성으로 강제로 덮지 않고, 프리미엄 레퍼런스 + 현재 SMK + 원본 자산들을
+    모두 입력 이미지로 제공한 뒤 gpt-image-2가 자연스럽게 활용하도록 한다.
+    실패 시 규칙 기반 렌더러로 fallback한다.
     """
+    temp_paths: List[str] = []
     try:
         client = get_client()
         ref_path = resolve_premium_reference_path()
         prompt = build_premium_infographic_ai_prompt(data, contact)
-        with open(ref_path, 'rb') as ref_file:
+
+        # Reference images: style reference + current SMK + exact asset references.
+        temp_paths.append(ref_path)
+        if base_smk_img is not None:
+            temp_paths.append(_save_temp_png(base_smk_img, 'premium_base_smk_'))
+        if university_logo is not None:
+            temp_paths.append(_save_temp_png(university_logo, 'premium_univ_logo_'))
+        pium_qr_card = make_pium_qr_reference_card(pium_logo, qr_img, piumlink_logo)
+        temp_paths.append(_save_temp_png(pium_qr_card, 'premium_pium_qr_'))
+        if rep_img is not None:
+            temp_paths.append(_save_temp_png(rep_img, 'premium_rep_drawing_'))
+
+        with ExitStack() as stack:
+            files = [stack.enter_context(open(p, 'rb')) for p in temp_paths]
             result = client.images.edit(
                 model=PREMIUM_IMAGE_MODEL_FIXED,
-                image=[ref_file],
+                image=files,
                 prompt=prompt,
                 size='1024x1536',
             )
         raw = _extract_generated_image_bytes(result)
-        base_img = Image.open(BytesIO(raw)).convert('RGB')
-        final_img = overlay_preserved_assets_on_premium_infographic(
-            base_img,
-            university_logo=university_logo,
-            pium_logo=pium_logo,
-            qr_img=qr_img,
-            rep_img=rep_img,
-        )
-        return final_img
+        return Image.open(BytesIO(raw)).convert('RGB')
     except Exception:
         # fallback: preserve operational stability
         return make_high_quality_infographic_image(
@@ -2847,6 +2876,22 @@ def generate_reference_based_premium_infographic(
             qr_img=qr_img,
             piumlink_logo=piumlink_logo,
         )
+    finally:
+        # remove temporary files except bundled reference path
+        ref_abs = None
+        try:
+            ref_abs = os.path.abspath(resolve_premium_reference_path())
+        except Exception:
+            pass
+        for p in temp_paths:
+            try:
+                if ref_abs and os.path.abspath(p) == ref_abs:
+                    continue
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+
 
 def make_high_quality_infographic_image(
 
@@ -3256,6 +3301,7 @@ else:
                     pium_logo=pium_logo,
                     qr_img=st.session_state.qr_img,
                     piumlink_logo=piumlink_logo,
+                    base_smk_img=st.session_state.brief_image,
                 )
                 st.session_state.hq_image = hq_image
                 st.session_state.hq_png_bytes = make_png_bytes_from_image(hq_image)
@@ -3263,7 +3309,7 @@ else:
 
         if st.session_state.hq_image is not None:
             st.markdown("#### 프리미엄 레퍼런스 기반 인포그래픽 이미지")
-            st.caption("번들된 premium_infographic_reference.png를 gpt-image-2로 직접 참고해 프리미엄 인포그래픽을 생성한 결과입니다. 대학 로고, PIUM 로고, QR 코드, 대표도면은 생성 후 원본 그대로 다시 합성하여 변형을 최소화합니다. 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
+            st.caption("번들된 premium_infographic_reference.png를 gpt-image-2로 직접 참고해 프리미엄 인포그래픽을 생성한 결과입니다. 프리미엄 레퍼런스, 현재 SMK, 대학 로고, PIUM+QR 카드, 대표도면을 모두 참조 이미지로 전달해 gpt-image-2가 기존 자산을 자연스럽게 활용하도록 생성합니다. 강제 후합성은 사용하지 않으며, 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
             st.image(st.session_state.hq_image, use_container_width=True)
             d1, d2 = st.columns(2)
             with d1:

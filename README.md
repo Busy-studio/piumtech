@@ -37,3 +37,10 @@ OPENAI_API_KEY = "sk-본인_API키"
 - Asset/application images use `gpt-image-1-mini` by default via `ASSET_IMAGE_MODEL_FIXED`.
 - Reference-based premium infographic generation uses `gpt-image-2` by default via `PREMIUM_IMAGE_MODEL_FIXED`.
 - You can override them with environment variables: `ASSET_IMAGE_MODEL`, `PREMIUM_IMAGE_MODEL`.
+
+## Premium Reference Asset Mode Update
+- 프리미엄 모드는 후합성을 사용하지 않고 reference 이미지들을 함께 전달합니다.
+- 전달 reference: premium reference / 현재 SMK / 대학 로고 / PIUM+QR 카드 / 대표도면.
+- gpt-image-2가 기존 자산을 자연스럽게 활용해 프리미엄 디자인을 생성합니다.
+- 적용분야 이미지는 gpt-image-1-mini, 프리미엄 최종 이미지는 gpt-image-2를 사용합니다.
+
