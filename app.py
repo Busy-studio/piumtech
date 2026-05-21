@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Tuple
 
 import fitz
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont, ImageStat, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageStat, ImageEnhance, ImageFilter
 import matplotlib
 matplotlib.use("Agg")
 # Premium infographic style reference asset
@@ -2956,7 +2956,163 @@ def overlay_preserved_assets_on_premium_infographic(
     return im
 
 
-def generate_reference_based_premium_infographic(
+
+
+def _draw_exact_header_overlay(img: Image.Image, data: Dict[str, Any], university_logo: Image.Image | None = None) -> Image.Image:
+    im = img.convert('RGBA').copy()
+    d = ImageDraw.Draw(im)
+    W, H = im.size
+    sx, sy = W/1240.0, H/1754.0
+    theme = extract_logo_theme(university_logo)
+    primary = ensure_dark(theme.get('primary', (0,55,135)))
+    black = (30,36,46,255)
+    gray = (88,96,108,255)
+    # clean exact text area while preserving overall background outside
+    x1, y1 = int(176*sx), int(30*sy)
+    x2, y2 = int(990*sx), int(238*sy)
+    d.rounded_rectangle((x1, y1, x2, y2), radius=max(16,int(22*sx)), fill=(255,255,255,238))
+    lang = get_lang_code(data.get('language','ko'))
+    kicker = f"PIUM Tech Offer x {data.get('university_display') or data.get('university','')} | {data.get('department_display') or data.get('department','')} | {data.get('professor','')} {label(lang,'prof_suffix')}"
+    draw_fitted_wrapped(d, (x1+int(18*sx), y1+int(16*sy)), kicker, max(12,int(16*sx)), False, gray[:3], x2-x1-int(36*sx), int(24*sy), line_gap=2, min_size=max(9,int(10*sx)), max_lines=1)
+    draw_fitted_wrapped(d, (x1+int(18*sx), y1+int(48*sy)), str(data.get('marketing_title','')), max(24,int(38*sx)), True, primary, x2-x1-int(36*sx), int(92*sy), line_gap=max(2,int(4*sy)), min_size=max(18,int(20*sx)), max_lines=3)
+    subtitle = str(data.get('subtitle') or '').strip()
+    if subtitle:
+        draw_fitted_wrapped(d, (x1+int(18*sx), y1+int(150*sy)), subtitle, max(12,int(18*sx)), False, black[:3], x2-x1-int(36*sx), int(38*sy), line_gap=2, min_size=max(9,int(10*sx)), max_lines=2)
+    return im.convert('RGB')
+
+
+def _draw_exact_ip_table_overlay(img: Image.Image, data: Dict[str, Any], university_logo: Image.Image | None = None) -> Image.Image:
+    im = img.convert('RGBA').copy()
+    d = ImageDraw.Draw(im)
+    W,H=im.size
+    sx, sy = W/1240.0, H/1754.0
+    theme=extract_logo_theme(university_logo)
+    primary=ensure_dark(theme.get('primary',(0,55,135)))
+    line=mix(primary,(210,220,232),0.82)
+    black=(30,36,46)
+    lang=get_lang_code(data.get('language','ko'))
+    ip=normalize_ip(data.get('ip',{}))
+    # overwrite lower IP section with exact table
+    box=(int(24*sx), int(1460*sy), int(1216*sx), int(1638*sy))
+    d.rounded_rectangle(box, radius=max(16,int(22*sx)), fill=(255,255,255,246), outline=line, width=max(1,int(2*sx)))
+    d.text((box[0]+int(30*sx), box[1]+int(16*sy)), label(lang,'ip'), font=load_font(max(16,int(24*sx)), True), fill=primary)
+    table_x, table_y = box[0]+int(20*sx), box[1]+int(64*sy)
+    table_w, table_h = box[2]-box[0]-int(40*sx), int(94*sy)
+    header_h=int(32*sy)
+    col1=int(table_w*0.44); col2=int(table_w*0.27)
+    c1=table_x+col1; c2=c1+col2
+    d.rounded_rectangle((table_x,table_y,table_x+table_w,table_y+table_h), radius=max(8,int(10*sx)), fill=(255,255,255,255), outline=line, width=max(1,int(1*sx)))
+    d.rectangle((table_x,table_y,table_x+table_w,table_y+header_h), fill=primary)
+    for xx in (c1,c2):
+        d.line((xx, table_y, xx, table_y+table_h), fill=line, width=max(1,int(1*sx)))
+    white=(255,255,255)
+    draw_centered_wrapped(d,(table_x+5,table_y+3,c1-5,table_y+header_h-2),label(lang,'invention'),load_font(max(10,int(14*sx)),True),white,max_lines=1)
+    draw_centered_wrapped(d,(c1+5,table_y+2,c2-5,table_y+header_h-2),label(lang,'app_no'),load_font(max(8,int(11*sx)),True),white,max_lines=2,line_gap=1)
+    draw_centered_wrapped(d,(c2+5,table_y+2,table_x+table_w-5,table_y+header_h-2),label(lang,'app_date'),load_font(max(8,int(11*sx)),True),white,max_lines=2,line_gap=1)
+    title=ip.get('title') or data.get('original_title','')
+    num = f"{ip.get('application_number','')}\n({ip.get('registration_number','')})" if ip.get('registration_number') else ip.get('application_number','')
+    date = f"{ip.get('application_date','')}\n({ip.get('registration_date','')})" if ip.get('registration_date') else ip.get('application_date','')
+    draw_centered_wrapped(d,(table_x+8,table_y+header_h+5,c1-8,table_y+table_h-5),title,load_font(max(9,int(13*sx)),False),black,max_lines=2,line_gap=2)
+    draw_centered_wrapped(d,(c1+8,table_y+header_h+5,c2-8,table_y+table_h-5),num,load_font(max(9,int(13*sx)),False),black,max_lines=2,line_gap=2)
+    draw_centered_wrapped(d,(c2+8,table_y+header_h+5,table_x+table_w-8,table_y+table_h-5),date,load_font(max(9,int(13*sx)),False),black,max_lines=2,line_gap=2)
+    return im.convert('RGB')
+
+
+def _draw_exact_contact_overlay(img: Image.Image, contact: str, data: Dict[str, Any], university_logo: Image.Image | None = None) -> Image.Image:
+    im=img.convert('RGBA').copy()
+    d=ImageDraw.Draw(im)
+    W,H=im.size; sx,sy=W/1240.0,H/1754.0
+    theme=extract_logo_theme(university_logo)
+    primary=ensure_dark(theme.get('primary',(0,55,135)))
+    accent=theme.get('accent', mix(primary,(0,175,190),0.35))
+    footer=(int(24*sx), int(1650*sy), int(1216*sx), int(1730*sy))
+    # gradient footer
+    w=max(1, footer[2]-footer[0]); h=max(1, footer[3]-footer[1])
+    grad=Image.new('RGB',(w,h),primary)
+    draw_linear_gradient(grad,(0,0,w,h),primary,mix(accent,(25,25,40),0.20),horizontal=True)
+    im.paste(grad.convert('RGBA'),(footer[0],footer[1]))
+    d.rounded_rectangle(footer, radius=max(16,int(22*sx)), outline=(210,220,232,255), width=max(1,int(1*sx)))
+    lang=get_lang_code(data.get('language','ko'))
+    d.text((footer[0]+int(34*sx), footer[1]+int(22*sy)), label(lang,'contact'), font=load_font(max(15,int(24*sx)),True), fill=(255,255,255,255))
+    draw_fitted_wrapped(d,(footer[0]+int(160*sx), footer[1]+int(27*sy)), contact, max(11,int(17*sx)), False, (255,255,255), footer[2]-footer[0]-int(200*sx), int(26*sy), line_gap=2, min_size=max(8,int(10*sx)), max_lines=1)
+    return im.convert('RGB')
+
+
+
+PREMIUM_SECTION_BBOX = {
+    "header": (24, 20, 1216, 264),
+    "apps_market": (24, 280, 1216, 670),
+    "overview_diff": (24, 694, 1216, 1100),
+    "rep_comp": (24, 1126, 1216, 1438),
+    "ip": (24, 1460, 1216, 1638),
+    "footer": (24, 1650, 1216, 1730),
+}
+
+SECTION_FALLBACK_ORDER = ["apps_market", "overview_diff", "rep_comp"]
+
+
+def _scale_box(box: tuple[int,int,int,int], img_size: tuple[int,int]) -> tuple[int,int,int,int]:
+    W, H = img_size
+    sx, sy = W / 1240.0, H / 1754.0
+    x1, y1, x2, y2 = box
+    return (int(round(x1 * sx)), int(round(y1 * sy)), int(round(x2 * sx)), int(round(y2 * sy)))
+
+
+def _crop_box(img: Image.Image, box: tuple[int,int,int,int]) -> Image.Image:
+    return img.crop(box)
+
+
+def _gray_stats(img: Image.Image) -> tuple[float, float, float]:
+    arr = np.asarray(img.convert('L'), dtype=np.float32)
+    mean = float(arr.mean()) if arr.size else 0.0
+    std = float(arr.std()) if arr.size else 0.0
+    dark_ratio = float((arr < 180).mean()) if arr.size else 0.0
+    return mean, std, dark_ratio
+
+
+def _edge_density(img: Image.Image) -> float:
+    arr = np.asarray(img.convert('L'), dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[0] < 2 or arr.shape[1] < 2:
+        return 0.0
+    gx = np.abs(np.diff(arr, axis=1))
+    gy = np.abs(np.diff(arr, axis=0))
+    edge = (gx > 18).mean() * 0.5 + (gy > 18).mean() * 0.5
+    return float(edge)
+
+
+def _text_like_score(img: Image.Image) -> float:
+    mean, std, dark_ratio = _gray_stats(img)
+    edge = _edge_density(img)
+    # heuristic: higher std + enough dark pixels + enough edges implies readable content
+    return std * 0.04 + dark_ratio * 2.2 + edge * 6.0
+
+
+def _should_replace_section(generated_crop: Image.Image, reference_crop: Image.Image, section_name: str) -> bool:
+    g_score = _text_like_score(generated_crop)
+    r_score = _text_like_score(reference_crop)
+    g_mean, g_std, g_dark = _gray_stats(generated_crop)
+    # blank / washed / extremely low-detail detection
+    if g_std < 10 or g_dark < 0.02:
+        return True
+    # if generated section is much weaker than stable section, fallback that section
+    if g_score < r_score * 0.55:
+        return True
+    # additional stricter rule for text-heavy sections
+    if section_name in ("overview_diff", "rep_comp") and g_score < r_score * 0.68:
+        return True
+    return False
+
+
+def _paste_section(base_img: Image.Image, section_img: Image.Image, box: tuple[int,int,int,int]) -> Image.Image:
+    im = base_img.copy()
+    target = (box[2] - box[0], box[3] - box[1])
+    if section_img.size != target:
+        section_img = section_img.resize(target, Image.LANCZOS)
+    im.paste(section_img, (box[0], box[1]))
+    return im
+
+
+def build_stable_premium_reference_image(
     data: Dict[str, Any],
     rep_img: Image.Image,
     app_imgs: List[Image.Image],
@@ -2965,15 +3121,7 @@ def generate_reference_based_premium_infographic(
     pium_logo: Image.Image | None = None,
     qr_img: Image.Image | None = None,
     piumlink_logo: Image.Image | None = None,
-    base_smk_img: Image.Image | None = None,
 ) -> Image.Image:
-    """안정형 프리미엄 인포그래픽 생성.
-
-    gpt-image-2가 전체 페이지의 한글/표/QR/도면을 다시 그리면 오타와 왜곡이 발생할 수 있으므로,
-    프리미엄 최종본은 코드 기반 렌더러로 고정 생성한다.
-    적용분야 이미지는 앞 단계에서 gpt-image-1-mini로 생성된 app_imgs를 사용하고,
-    시장현황 그래프, 본문, IP 표, 문의처, 로고/QR은 코드가 정확히 렌더링한다.
-    """
     return make_high_quality_infographic_image(
         data,
         rep_img,
@@ -2986,8 +3134,133 @@ def generate_reference_based_premium_infographic(
     )
 
 
-def make_high_quality_infographic_image(
+def apply_section_validation_and_corrections(
+    generated: Image.Image,
+    stable_reference: Image.Image,
+) -> Image.Image:
+    """섹션 단위 자동 검증 + 보정.
+    현재는 텍스트/레이아웃 오류가 잦은 본문 섹션을 대상으로,
+    생성 결과가 지나치게 빈약하거나 읽기 어려운 경우 안정형 섹션으로 교체한다.
+    """
+    img = generated.convert('RGB')
+    ref = stable_reference.convert('RGB')
+    for name in SECTION_FALLBACK_ORDER:
+        box = _scale_box(PREMIUM_SECTION_BBOX[name], img.size)
+        g_crop = _crop_box(img, box)
+        r_crop = _crop_box(ref, box)
+        if _should_replace_section(g_crop, r_crop, name):
+            img = _paste_section(img, r_crop, box)
+    return img
 
+def apply_mandatory_premium_corrections(
+    generated: Image.Image,
+    data: Dict[str, Any],
+    rep_img: Image.Image,
+    contact: str,
+    university_logo: Image.Image | None = None,
+    pium_logo: Image.Image | None = None,
+    qr_img: Image.Image | None = None,
+    piumlink_logo: Image.Image | None = None,
+) -> Image.Image:
+    """실제 사용용 1차 자동 보정 파이프라인.
+    AI 생성 결과의 미감은 최대한 유지하되, 치명 오류가 자주 나는 영역은 JSON/원본 자산으로 확정 보정한다.
+    """
+    img = generated.convert('RGB')
+    img = composite_brand_assets_on_final_image(img, university_logo=university_logo, pium_logo=pium_logo, qr_img=qr_img, piumlink_logo=piumlink_logo)
+    img = _draw_exact_header_overlay(img, data, university_logo=university_logo)
+    # representative drawing exact overlay in known premium area
+    img = overlay_preserved_assets_on_premium_infographic(img, university_logo=None, pium_logo=None, qr_img=None, rep_img=rep_img, piumlink_logo=None)
+    img = _draw_exact_ip_table_overlay(img, data, university_logo=university_logo)
+    img = _draw_exact_contact_overlay(img, contact, data, university_logo=university_logo)
+    return img
+
+def generate_reference_based_premium_infographic(
+    data: Dict[str, Any],
+    rep_img: Image.Image,
+    app_imgs: List[Image.Image],
+    contact: str,
+    university_logo: Image.Image | None = None,
+    pium_logo: Image.Image | None = None,
+    qr_img: Image.Image | None = None,
+    piumlink_logo: Image.Image | None = None,
+    base_smk_img: Image.Image | None = None,
+) -> Image.Image:
+    """레퍼런스 기반 프리미엄 인포그래픽 생성.
+    후합성으로 강제로 덮지 않고, 프리미엄 레퍼런스 + 현재 SMK + 원본 자산들을
+    모두 입력 이미지로 제공한 뒤 gpt-image-2가 자연스럽게 활용하도록 한다.
+    실패 시 규칙 기반 렌더러로 fallback한다.
+    """
+    temp_paths: List[str] = []
+    try:
+        client = get_client()
+        ref_path = resolve_premium_reference_path()
+        prompt = build_premium_infographic_ai_prompt(data, contact, university_logo=university_logo)
+
+        # Reference images: style reference + current SMK + exact asset references.
+        temp_paths.append(ref_path)
+        if base_smk_img is not None:
+            temp_paths.append(_save_temp_png(base_smk_img, 'premium_base_smk_'))
+        if university_logo is not None:
+            temp_paths.append(_save_temp_png(university_logo, 'premium_univ_logo_'))
+        # Explicit brand palette reference: prevents the reference image's blue palette from overriding university-specific colors.
+        temp_paths.append(_save_temp_png(make_brand_palette_reference_card(university_logo), 'premium_brand_palette_'))
+        pium_qr_card = make_pium_qr_reference_card(pium_logo, qr_img, piumlink_logo)
+        temp_paths.append(_save_temp_png(pium_qr_card, 'premium_pium_qr_'))
+        if rep_img is not None:
+            temp_paths.append(_save_temp_png(rep_img, 'premium_rep_drawing_'))
+
+        with ExitStack() as stack:
+            files = [stack.enter_context(open(p, 'rb')) for p in temp_paths]
+            result = client.images.edit(
+                model=PREMIUM_IMAGE_MODEL_FIXED,
+                image=files,
+                prompt=prompt,
+                size='1024x1536',
+            )
+        raw = _extract_generated_image_bytes(result)
+        generated = Image.open(BytesIO(raw)).convert('RGB')
+        # Final-step crisp asset compositing for logo / PIUM / QR preservation
+        generated = apply_mandatory_premium_corrections(
+            generated,
+            data,
+            rep_img,
+            contact,
+            university_logo=university_logo,
+            pium_logo=pium_logo,
+            qr_img=qr_img,
+            piumlink_logo=piumlink_logo,
+        )
+        return generated
+    except Exception:
+        # fallback: preserve operational stability
+        return make_high_quality_infographic_image(
+            data,
+            rep_img,
+            app_imgs,
+            contact,
+            university_logo=university_logo,
+            pium_logo=pium_logo,
+            qr_img=qr_img,
+            piumlink_logo=piumlink_logo,
+        )
+    finally:
+        # remove temporary files except bundled reference path
+        ref_abs = None
+        try:
+            ref_abs = os.path.abspath(resolve_premium_reference_path())
+        except Exception:
+            pass
+        for p in temp_paths:
+            try:
+                if ref_abs and os.path.abspath(p) == ref_abs:
+                    continue
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+
+
+def make_high_quality_infographic_image(
 
 
 
@@ -3373,8 +3646,8 @@ else:
         st.subheader("SMK 미리보기")
         st.image(st.session_state.brief_image, use_container_width=True)
 
-        if st.button("안정형 프리미엄 이미지/PDF로 변환", use_container_width=True):
-            with st.spinner("안정형 프리미엄 인포그래픽을 생성 중..."):
+        if st.button("섹션 검증 프리미엄 이미지/PDF로 변환", use_container_width=True):
+            with st.spinner("레퍼런스 기반 프리미엄 인포그래픽을 생성 중..."):
                 university_logo = get_logo_image(university) if use_logos else None
                 pium_logo = get_pium_logo_image() if use_logos else None
                 piumlink_logo = get_piumlink_logo_image() if use_logos else None
@@ -3394,8 +3667,8 @@ else:
                 st.session_state.hq_pdf_bytes = make_pdf_bytes_from_hq_image(hq_image)
 
         if st.session_state.hq_image is not None:
-            st.markdown("#### 안정형 프리미엄 인포그래픽 이미지")
-            st.caption("한글 오타, QR 왜곡, 대표도면 겹침을 방지하기 위해 최종 프리미엄 페이지는 코드 기반으로 정확히 렌더링합니다. 적용분야 이미지는 gpt-image-1-mini 생성 결과를 활용하고, 시장현황 그래프/본문/IP/문의처/로고/QR은 원본 데이터와 자산을 기준으로 고정 출력합니다.")
+            st.markdown("#### 섹션 검증 프리미엄 인포그래픽 이미지")
+            st.caption("번들된 premium_infographic_reference.png를 gpt-image-2로 직접 참고해 프리미엄 인포그래픽을 생성한 결과입니다. 프리미엄 레퍼런스, 현재 SMK, 대학 로고, 대학 로고 기반 색상 팔레트, PIUM+QR 카드, 대표도면을 모두 참조 이미지로 전달해 gpt-image-2가 기존 자산과 대학별 브랜드 색상을 자연스럽게 활용하도록 생성합니다. 생성 후 로고/QR/대표도면/제목/IP/문의처는 원본·JSON 기준으로 자동 보정하며, 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
             st.image(st.session_state.hq_image, use_container_width=True)
             d1, d2 = st.columns(2)
             with d1:

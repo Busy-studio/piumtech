@@ -56,9 +56,9 @@ OPENAI_API_KEY = "sk-본인_API키"
 - 레퍼런스의 기본 파란색 팔레트가 다른 대학 색상을 덮어쓰는 문제 완화
 
 
-## Stable Premium Mode Update
-- 프리미엄 최종 페이지에서 gpt-image-2 전체 페이지 생성 방식 중단
-- 한글 오타, QR 왜곡, 대표도면 겹침을 방지하기 위해 코드 기반 프리미엄 렌더러 사용
-- 적용분야/제품 이미지는 기존처럼 gpt-image-1-mini 생성 결과 활용
-- 시장현황 그래프, 본문 텍스트, IP 표, 문의처, 로고/QR는 코드로 정확하게 렌더링
-- 로고/QR 최종 정합 합성 및 PDF 해상도 개선 유지
+
+## Section-validated premium rendering
+- Premium mode first generates a full-page design with gpt-image-2.
+- Critical areas are corrected deterministically.
+- Then apps/market, overview/differentiation, and representative drawing/competitiveness sections are validated section-by-section.
+- Low-quality sections are automatically replaced with stable rendered sections.
