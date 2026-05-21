@@ -7,13 +7,14 @@ import tempfile
 import zipfile
 import shutil
 import requests
+
 from contextlib import ExitStack
 from io import BytesIO
 from typing import Any, Dict, List, Tuple
 
 import fitz
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont, ImageStat, ImageEnhance, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageStat, ImageEnhance, ImageFilter, ImageOps
 import matplotlib
 matplotlib.use("Agg")
 # Premium infographic style reference asset
