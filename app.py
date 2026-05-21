@@ -7,7 +7,6 @@ import tempfile
 import zipfile
 import shutil
 import requests
-
 from contextlib import ExitStack
 from io import BytesIO
 from typing import Any, Dict, List, Tuple
@@ -2687,56 +2686,6 @@ def resolve_premium_reference_path() -> str:
     raise FileNotFoundError(f"Premium reference image not found: {PREMIUM_REFERENCE_IMAGE_PATH}")
 
 
-
-
-def build_exact_content_payload_for_premium(data: Dict[str, Any], contact: str) -> Dict[str, Any]:
-    """프리미엄 이미지 생성 시 오타/누락을 줄이기 위해 기존 수정 패널의 내용을 구조화 JSON으로 전달."""
-    market = normalize_market_info(data.get("market_info", {}))
-    ip = normalize_ip(data.get("ip", {}))
-    years, values, cagr, unit = build_market_series(market)
-    end_year = years[-1] if years else _safe_int(market.get("end_year"), 0)
-    end_value = format_market_value(values[-1], unit) if values else str(market.get("end_value") or "")
-    return {
-        "basic_info": {
-            "university": data.get("university_display") or data.get("university", ""),
-            "department": data.get("department_display") or data.get("department", ""),
-            "professor": data.get("professor", ""),
-            "technology_title": data.get("marketing_title", ""),
-            "one_line_summary": data.get("subtitle", ""),
-            "original_invention_title": data.get("original_title", ""),
-        },
-        "applications_products": [
-            {
-                "name": app.get("name", ""),
-                "description": app.get("description", ""),
-            }
-            for app in (data.get("applications", [])[:3] or [])
-        ],
-        "market_status": {
-            "display_title": market.get("display_title") or market.get("market_name") or label(get_lang_code(data.get("language", "ko")), "market_default"),
-            "cagr": f"{cagr:.1f}%" if cagr else "",
-            "end_year": end_year,
-            "end_value": end_value,
-            "unit": unit,
-            "source": market_source_text(market),
-        },
-        "technology_overview": data.get("overview", [])[:3],
-        "key_differentiators": data.get("differentiation", [])[:3],
-        "technical_competitiveness": {
-            "current_limitations": data.get("limitations", [])[:2],
-            "technical_advantages": data.get("technical_advantages", [])[:2],
-        },
-        "ip_status": {
-            "invention_title": ip.get("title", "") or data.get("original_title", ""),
-            "application_number": ip.get("application_number", ""),
-            "registration_number": ip.get("registration_number", ""),
-            "application_date": ip.get("application_date", ""),
-            "registration_date": ip.get("registration_date", ""),
-            "applicant": ip.get("applicant", ""),
-        },
-        "contact": contact,
-    }
-
 def build_premium_infographic_ai_prompt(data: Dict[str, Any], contact: str, university_logo: Image.Image | None = None) -> str:
     lang = get_lang_code(data.get("language", "ko"))
     apps = data.get("applications", [])[:3]
@@ -2768,8 +2717,6 @@ def build_premium_infographic_ai_prompt(data: Dict[str, Any], contact: str, univ
     brand_primary_hex = rgb_to_hex(brand_primary)
     brand_secondary_hex = rgb_to_hex(brand_secondary)
     brand_accent_hex = rgb_to_hex(brand_accent)
-    exact_content_payload = build_exact_content_payload_for_premium(data, contact)
-    exact_content_json = json.dumps(exact_content_payload, ensure_ascii=False, indent=2)
     prompt = f"""
 You are given multiple reference images:
 - Image A: premium_infographic_reference.png. Use this as the MAIN design/style reference.
@@ -2808,14 +2755,6 @@ Design target:
 - Technical competitiveness should show current limitations and technical advantages clearly.
 - IP status should be a neat table.
 - Contact should be a premium footer bar.
-
-EXACT_CONTENT_JSON:
-The following JSON is the authoritative source of all text and factual content.
-Use these values exactly wherever possible. Do not invent replacement text. Do not paraphrase patent numbers, dates, names, phone numbers, emails, or invention titles.
-If space is limited, shorten only descriptive body sentences, but preserve the meaning and keep all names/numbers/emails exactly.
-```json
-{exact_content_json}
-```
 
 Text/content to use:
 Header line: {header_kicker}
@@ -2857,9 +2796,8 @@ Readability rules:
 - Keep Korean text readable and professionally typeset.
 - Avoid fake random Korean text.
 - Avoid text truncation where possible.
-- Preserve numbers, emails, phone numbers, names, department names, university names, invention titles, application numbers, registration numbers, application dates, and registration dates EXACTLY from EXACT_CONTENT_JSON.
-- Do not create pseudo-Korean or approximate text. Use the provided JSON values.
-- Use concise Korean only for long descriptive body text when needed for layout, but do not change the meaning.
+- Preserve numbers, emails, phone numbers, and patent numbers as accurately as possible.
+- Use concise Korean where needed for layout, but do not change the meaning.
 """
     return prompt
 
@@ -3029,80 +2967,27 @@ def generate_reference_based_premium_infographic(
     piumlink_logo: Image.Image | None = None,
     base_smk_img: Image.Image | None = None,
 ) -> Image.Image:
-    """레퍼런스 기반 프리미엄 인포그래픽 생성.
-    후합성으로 강제로 덮지 않고, 프리미엄 레퍼런스 + 현재 SMK + 원본 자산들을
-    모두 입력 이미지로 제공한 뒤 gpt-image-2가 자연스럽게 활용하도록 한다.
-    실패 시 규칙 기반 렌더러로 fallback한다.
+    """안정형 프리미엄 인포그래픽 생성.
+
+    gpt-image-2가 전체 페이지의 한글/표/QR/도면을 다시 그리면 오타와 왜곡이 발생할 수 있으므로,
+    프리미엄 최종본은 코드 기반 렌더러로 고정 생성한다.
+    적용분야 이미지는 앞 단계에서 gpt-image-1-mini로 생성된 app_imgs를 사용하고,
+    시장현황 그래프, 본문, IP 표, 문의처, 로고/QR은 코드가 정확히 렌더링한다.
     """
-    temp_paths: List[str] = []
-    try:
-        client = get_client()
-        ref_path = resolve_premium_reference_path()
-        prompt = build_premium_infographic_ai_prompt(data, contact, university_logo=university_logo)
-
-        # Reference images: style reference + current SMK + exact asset references.
-        temp_paths.append(ref_path)
-        if base_smk_img is not None:
-            temp_paths.append(_save_temp_png(base_smk_img, 'premium_base_smk_'))
-        if university_logo is not None:
-            temp_paths.append(_save_temp_png(university_logo, 'premium_univ_logo_'))
-        # Explicit brand palette reference: prevents the reference image's blue palette from overriding university-specific colors.
-        temp_paths.append(_save_temp_png(make_brand_palette_reference_card(university_logo), 'premium_brand_palette_'))
-        pium_qr_card = make_pium_qr_reference_card(pium_logo, qr_img, piumlink_logo)
-        temp_paths.append(_save_temp_png(pium_qr_card, 'premium_pium_qr_'))
-        if rep_img is not None:
-            temp_paths.append(_save_temp_png(rep_img, 'premium_rep_drawing_'))
-
-        with ExitStack() as stack:
-            files = [stack.enter_context(open(p, 'rb')) for p in temp_paths]
-            result = client.images.edit(
-                model=PREMIUM_IMAGE_MODEL_FIXED,
-                image=files,
-                prompt=prompt,
-                size='1024x1536',
-            )
-        raw = _extract_generated_image_bytes(result)
-        generated = Image.open(BytesIO(raw)).convert('RGB')
-        # Final-step crisp asset compositing for logo / PIUM / QR preservation
-        generated = overlay_preserved_assets_on_premium_infographic(
-            generated,
-            university_logo=university_logo,
-            pium_logo=pium_logo,
-            qr_img=qr_img,
-            rep_img=rep_img,
-            piumlink_logo=piumlink_logo,
-        )
-        return generated
-    except Exception:
-        # fallback: preserve operational stability
-        return make_high_quality_infographic_image(
-            data,
-            rep_img,
-            app_imgs,
-            contact,
-            university_logo=university_logo,
-            pium_logo=pium_logo,
-            qr_img=qr_img,
-            piumlink_logo=piumlink_logo,
-        )
-    finally:
-        # remove temporary files except bundled reference path
-        ref_abs = None
-        try:
-            ref_abs = os.path.abspath(resolve_premium_reference_path())
-        except Exception:
-            pass
-        for p in temp_paths:
-            try:
-                if ref_abs and os.path.abspath(p) == ref_abs:
-                    continue
-                if os.path.exists(p):
-                    os.remove(p)
-            except Exception:
-                pass
+    return make_high_quality_infographic_image(
+        data,
+        rep_img,
+        app_imgs,
+        contact,
+        university_logo=university_logo,
+        pium_logo=pium_logo,
+        qr_img=qr_img,
+        piumlink_logo=piumlink_logo,
+    )
 
 
 def make_high_quality_infographic_image(
+
 
 
 
@@ -3488,8 +3373,8 @@ else:
         st.subheader("SMK 미리보기")
         st.image(st.session_state.brief_image, use_container_width=True)
 
-        if st.button("프리미엄 레퍼런스 기반 이미지/PDF로 변환", use_container_width=True):
-            with st.spinner("레퍼런스 기반 프리미엄 인포그래픽을 생성 중..."):
+        if st.button("안정형 프리미엄 이미지/PDF로 변환", use_container_width=True):
+            with st.spinner("안정형 프리미엄 인포그래픽을 생성 중..."):
                 university_logo = get_logo_image(university) if use_logos else None
                 pium_logo = get_pium_logo_image() if use_logos else None
                 piumlink_logo = get_piumlink_logo_image() if use_logos else None
@@ -3509,8 +3394,8 @@ else:
                 st.session_state.hq_pdf_bytes = make_pdf_bytes_from_hq_image(hq_image)
 
         if st.session_state.hq_image is not None:
-            st.markdown("#### 프리미엄 레퍼런스 기반 인포그래픽 이미지")
-            st.caption("번들된 premium_infographic_reference.png를 gpt-image-2로 직접 참고해 프리미엄 인포그래픽을 생성한 결과입니다. 프리미엄 레퍼런스, 현재 SMK, 대학 로고, 대학 로고 기반 색상 팔레트, PIUM+QR 카드, 대표도면과 함께 기존 수정 패널의 전체 텍스트 데이터를 EXACT_CONTENT_JSON으로 전달해 gpt-image-2가 기존 자산·브랜드 색상·정확한 텍스트를 우선 활용하도록 생성합니다. 강제 후합성은 사용하지 않으며, 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
+            st.markdown("#### 안정형 프리미엄 인포그래픽 이미지")
+            st.caption("한글 오타, QR 왜곡, 대표도면 겹침을 방지하기 위해 최종 프리미엄 페이지는 코드 기반으로 정확히 렌더링합니다. 적용분야 이미지는 gpt-image-1-mini 생성 결과를 활용하고, 시장현황 그래프/본문/IP/문의처/로고/QR은 원본 데이터와 자산을 기준으로 고정 출력합니다.")
             st.image(st.session_state.hq_image, use_container_width=True)
             d1, d2 = st.columns(2)
             with d1:
