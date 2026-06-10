@@ -15,6 +15,7 @@ import fitz
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont, ImageStat, ImageEnhance, ImageFilter, ImageOps
 import matplotlib
+import numpy as np
 matplotlib.use("Agg")
 # Premium infographic style reference asset
 PREMIUM_REFERENCE_IMAGE_PATH = "assets/reference/premium_infographic_reference.png"
@@ -3152,6 +3153,71 @@ def apply_section_validation_and_corrections(
             img = _paste_section(img, r_crop, box)
     return img
 
+
+
+def _detect_rep_drawing_bbox(img: Image.Image) -> tuple[int,int,int,int] | None:
+    """생성 이미지 안의 대표도면 패널 위치를 대략 탐지한다.
+    고정 섹션 전체를 덮지 않고, 실제 도면이 있는 하단 좌측 영역의 어두운 선분 분포만 이용한다.
+    """
+    W, H = img.size
+    # lower-left region where representative drawing is normally located
+    rx1, ry1 = int(W * 0.03), int(H * 0.58)
+    rx2, ry2 = int(W * 0.47), int(H * 0.82)
+    roi = img.crop((rx1, ry1, rx2, ry2)).convert('L')
+    arr = np.asarray(roi, dtype=np.uint8)
+    # ignore very top part of ROI to avoid section title
+    top_ignore = int(arr.shape[0] * 0.12)
+    work = arr[top_ignore:, :]
+    # black/gray technical drawing lines
+    mask = work < 130
+    # remove sparse noise by row/column support
+    if mask.mean() < 0.003:
+        return None
+    ys, xs = np.where(mask)
+    if len(xs) < 80 or len(ys) < 80:
+        return None
+    x1, x2 = int(xs.min()), int(xs.max())
+    y1, y2 = int(ys.min()) + top_ignore, int(ys.max()) + top_ignore
+    bw, bh = x2 - x1, y2 - y1
+    if bw < W * 0.12 or bh < H * 0.06:
+        return None
+    # clamp unrealistically large detections
+    if bw > W * 0.44 or bh > H * 0.28:
+        return None
+    pad_x = int(W * 0.025)
+    pad_y = int(H * 0.025)
+    bx1 = max(rx1, rx1 + x1 - pad_x)
+    by1 = max(ry1, ry1 + y1 - pad_y)
+    bx2 = min(rx2, rx1 + x2 + pad_x)
+    by2 = min(ry2, ry1 + y2 + pad_y)
+    # ensure a reasonably rectangular drawing box
+    if bx2 - bx1 < W * 0.18 or by2 - by1 < H * 0.10:
+        return None
+    return (bx1, by1, bx2, by2)
+
+
+def _default_rep_drawing_bbox(img: Image.Image) -> tuple[int,int,int,int]:
+    W, H = img.size
+    sx, sy = W / 1240.0, H / 1754.0
+    return (int(round(62*sx)), int(round(1010*sy)), int(round(458*sx)), int(round(1295*sy)))
+
+
+def overlay_rep_drawing_micro_patch(img: Image.Image, rep_img: Image.Image | None) -> Image.Image:
+    """기존 생성 결과의 대표도면 위치를 최대한 유지하면서, 도면 그림 부분만 원본으로 교체한다."""
+    if rep_img is None:
+        return img.convert('RGB')
+    im = img.convert('RGB').copy()
+    bbox = _detect_rep_drawing_bbox(im) or _default_rep_drawing_bbox(im)
+    x1, y1, x2, y2 = bbox
+    d = ImageDraw.Draw(im)
+    # only clear the detected drawing area, not the whole section/card
+    d.rounded_rectangle((x1, y1, x2, y2), radius=max(8, int((x2-x1)*0.035)), fill=(255,255,255), outline=(205,216,228), width=1)
+    margin_x = max(8, int((x2-x1)*0.05))
+    margin_y = max(8, int((y2-y1)*0.06))
+    rep = fit_image(rep_img.convert('RGB'), (max(1, x2-x1-2*margin_x), max(1, y2-y1-2*margin_y)), bg=(255,255,255), trim=True)
+    im.paste(rep, (x1 + (x2-x1-rep.width)//2, y1 + (y2-y1-rep.height)//2))
+    return im
+
 def apply_mandatory_premium_corrections(
     generated: Image.Image,
     data: Dict[str, Any],
@@ -3168,8 +3234,8 @@ def apply_mandatory_premium_corrections(
     img = generated.convert('RGB')
     img = composite_brand_assets_on_final_image(img, university_logo=university_logo, pium_logo=pium_logo, qr_img=qr_img, piumlink_logo=piumlink_logo)
     img = _draw_exact_header_overlay(img, data, university_logo=university_logo)
-    # representative drawing exact overlay in known premium area
-    img = overlay_preserved_assets_on_premium_infographic(img, university_logo=None, pium_logo=None, qr_img=None, rep_img=rep_img, piumlink_logo=None)
+    # 대표도면은 생성 결과의 도면 패널을 탐지한 뒤 해당 그림 영역만 micro patch
+    img = overlay_rep_drawing_micro_patch(img, rep_img)
     img = _draw_exact_ip_table_overlay(img, data, university_logo=university_logo)
     img = _draw_exact_contact_overlay(img, contact, data, university_logo=university_logo)
     return img
@@ -3646,7 +3712,7 @@ else:
         st.subheader("SMK 미리보기")
         st.image(st.session_state.brief_image, use_container_width=True)
 
-        if st.button("섹션 검증 프리미엄 이미지/PDF로 변환", use_container_width=True):
+        if st.button("정밀 보정 프리미엄 이미지/PDF로 변환", use_container_width=True):
             with st.spinner("레퍼런스 기반 프리미엄 인포그래픽을 생성 중..."):
                 university_logo = get_logo_image(university) if use_logos else None
                 pium_logo = get_pium_logo_image() if use_logos else None
@@ -3667,7 +3733,7 @@ else:
                 st.session_state.hq_pdf_bytes = make_pdf_bytes_from_hq_image(hq_image)
 
         if st.session_state.hq_image is not None:
-            st.markdown("#### 섹션 검증 프리미엄 인포그래픽 이미지")
+            st.markdown("#### 정밀 보정 프리미엄 인포그래픽 이미지")
             st.caption("번들된 premium_infographic_reference.png를 gpt-image-2로 직접 참고해 프리미엄 인포그래픽을 생성한 결과입니다. 프리미엄 레퍼런스, 현재 SMK, 대학 로고, 대학 로고 기반 색상 팔레트, PIUM+QR 카드, 대표도면을 모두 참조 이미지로 전달해 gpt-image-2가 기존 자산과 대학별 브랜드 색상을 자연스럽게 활용하도록 생성합니다. 생성 후 로고/QR/대표도면/제목/IP/문의처는 원본·JSON 기준으로 자동 보정하며, 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
             st.image(st.session_state.hq_image, use_container_width=True)
             d1, d2 = st.columns(2)
