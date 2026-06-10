@@ -2139,6 +2139,34 @@ def _image_to_a4_pdf_bytes(img: Image.Image, dpi: int = 300) -> bytes:
     return out
 
 
+def _image_to_native_ratio_pdf_bytes(img: Image.Image, dpi: int = 300, target_height_in: float = 10.0) -> bytes:
+    """이미지 비율을 그대로 유지하는 세로형 디지털 포스터 PDF를 생성한다.
+    프리미엄 인포그래픽이 A4를 꼭 따르지 않아도 되는 경우,
+    1080x1920 같은 9:16 비율을 그대로 살려 상하 여백 없이 보이도록 사용한다.
+    """
+    src = img.convert("RGB")
+    src_ratio = src.width / max(1, src.height)
+    page_h_pt = target_height_in * 72.0
+    page_w_pt = page_h_pt * src_ratio
+
+    target_w_px = max(1, int(round(page_w_pt / 72 * dpi)))
+    target_h_px = max(1, int(round(page_h_pt / 72 * dpi)))
+    resampled = src.resize((target_w_px, target_h_px), Image.LANCZOS)
+    resampled = ImageEnhance.Sharpness(resampled).enhance(1.04)
+
+    png = BytesIO()
+    resampled.save(png, format="PNG", optimize=True)
+    png_bytes = png.getvalue()
+
+    doc = fitz.open()
+    page = doc.new_page(width=page_w_pt, height=page_h_pt)
+    rect = fitz.Rect(0, 0, page_w_pt, page_h_pt)
+    page.insert_image(rect, stream=png_bytes, keep_proportion=True)
+    out = doc.tobytes(deflate=True, garbage=4)
+    doc.close()
+    return out
+
+
 def make_pdf_bytes_from_image(img: Image.Image) -> bytes:
     # 기본 SMK PDF도 실제 A4 페이지로 저장해 PDF 뷰어 확대 시 품질 저하를 줄인다.
     return _image_to_a4_pdf_bytes(img, dpi=300)
@@ -2687,7 +2715,7 @@ def resolve_premium_reference_path() -> str:
     raise FileNotFoundError(f"Premium reference image not found: {PREMIUM_REFERENCE_IMAGE_PATH}")
 
 
-def build_premium_infographic_ai_prompt(data: Dict[str, Any], contact: str, university_logo: Image.Image | None = None, app_ref_count: int = 0) -> str:
+def build_premium_infographic_ai_prompt(data: Dict[str, Any], contact: str, university_logo: Image.Image | None = None) -> str:
     lang = get_lang_code(data.get("language", "ko"))
     apps = data.get("applications", [])[:3]
     market = normalize_market_info(data.get("market_info", {}))
@@ -2718,38 +2746,28 @@ def build_premium_infographic_ai_prompt(data: Dict[str, Any], contact: str, univ
     brand_primary_hex = rgb_to_hex(brand_primary)
     brand_secondary_hex = rgb_to_hex(brand_secondary)
     brand_accent_hex = rgb_to_hex(brand_accent)
-    app_ref_intro = ""
-    if app_ref_count > 0:
-        labels = []
-        start_ord = ord('F')
-        for i in range(app_ref_count):
-            labels.append(f"Image {chr(start_ord + i)}")
-        joined = ", ".join(labels)
-        app_ref_intro = f"\n- {joined}: the original application/product images used in the normal SMK. Reuse each of these exact images inside the application/product cards without redrawing, replacing, or restyling them."
-
     prompt = f"""
 You are given multiple reference images:
 - Image A: premium_infographic_reference.png. Use this as the MAIN design/style reference.
 - Image B: the current generated SMK page. Use this for the actual content, existing section order, and information architecture.
 - Image C: the original university logo asset. Use this exact logo visually in the top-left area. Do not redraw it into a different logo.
 - Image D: the original PIUM + QR reference card/block. Use this exact PIUM/QR block visually in the top-right area. Do not redraw it, restyle it, or create a second QR.
-- Image E: the original representative drawing. Use this exact drawing visually in the representative drawing panel. Do not replace it with a different diagram.{app_ref_intro}
+- Image E: the original representative drawing. Use this exact drawing visually in the representative drawing panel. Do not replace it with a different diagram.
 
-Create ONE premium Korean technology infographic image based on Image A's layout quality and Image B's actual content.
+Create ONE premium Korean technology infographic image based on Image A's layout quality and Image B's actual content. The final output must be a clean 1080x1920 vertical canvas that fills the frame fully with no unused borders or A4-style empty margins.
 This is NOT a blank redesign. It is a premium restyling of the current SMK using the supplied assets.
 
 IMPORTANT ASSET + COLOR RULES:
 - The university logo's dominant color is the authoritative brand color for the whole premium infographic.
 - Do not let the generic blue reference override the university color identity.
-- Preserve all supplied visual assets faithfully.
-- The university logo, PIUM+QR block, representative drawing, and application/product images must appear as the same underlying source images, not as newly illustrated substitutes.
+- Preserve the supplied university logo, PIUM+QR block, and representative drawing faithfully.
 - Do not hallucinate or redraw the university logo.
 - Do not hallucinate or redraw the PIUM logo or QR code.
 - Do not create extra QR codes. There should be only one PIUM/QR block in the top-right area.
 - Do not replace the representative drawing.
-- Do not replace the application/product images with icons, stock photos, or newly generated alternative images.
-- Keep the original aspect ratio of each supplied asset when placing it.
 - The final premium image must already contain the assets correctly. Do not assume any later overlay or post-compositing step.
+- The applications/products section and the market-status section may be newly redrawn in premium style rather than pasted unchanged, but they must keep the same meaning and content structure as the current SMK.
+- In the market-status section, the chart bars, KPI cards, icons, and graphic color tone must harmonize with the same university brand palette used across the page.
 
 Design target:
 - Visually close to Image A in layout quality and premium brochure polish, BUT do NOT copy Image A's blue color palette blindly.
@@ -2763,8 +2781,8 @@ Design target:
 - Stronger and more premium than the basic SMK.
 - No awkward overlaps, no duplicated logos/QR, no cropped section panels.
 - Keep all section order: header, applications/products, market status, technology overview, key differentiators, representative drawing, technical competitiveness, IP status, contact footer.
-- Application/product cards should be full-color and visually rich while retaining the supplied application/product images unchanged.
-- Market status should use a year-by-year bar chart with KPI cards.
+- Application/product cards should be fully re-rendered in premium style using the existing SMK content, not necessarily the exact same source pictures.
+- Market status should be re-rendered as a year-by-year bar chart with KPI cards, while matching the same brand palette as the rest of the infographic.
 - Overview and differentiators should use clean row cards with key phrases emphasized.
 - Technical competitiveness should show current limitations and technical advantages clearly.
 - IP status should be a neat table.
@@ -3300,18 +3318,10 @@ def generate_reference_based_premium_infographic(
         temp_paths.append(_save_temp_png(pium_qr_card, 'premium_pium_qr_'))
         if rep_img is not None:
             temp_paths.append(_save_temp_png(rep_img, 'premium_rep_drawing_'))
-        app_ref_count = 0
-        for i, app_img in enumerate(app_imgs[:3]):
-            if app_img is None:
-                continue
-            temp_paths.append(_save_temp_png(app_img, f'premium_app_{i+1}_'))
-            app_ref_count += 1
-
         prompt = build_premium_infographic_ai_prompt(
             data,
             contact,
             university_logo=university_logo,
-            app_ref_count=app_ref_count,
         )
 
         with ExitStack() as stack:
@@ -3320,7 +3330,7 @@ def generate_reference_based_premium_infographic(
                 model=PREMIUM_IMAGE_MODEL_FIXED,
                 image=files,
                 prompt=prompt,
-                size='1024x1536',
+                size='1080x1920',
             )
         raw = _extract_generated_image_bytes(result)
         generated = Image.open(BytesIO(raw)).convert('RGB')
@@ -3402,8 +3412,8 @@ def make_high_quality_infographic_image(
 
 
 def make_pdf_bytes_from_hq_image(img: Image.Image) -> bytes:
-    """프리미엄 인포그래픽 PDF를 실제 A4 300dpi급 이미지형 PDF로 저장한다."""
-    return _image_to_a4_pdf_bytes(img, dpi=300)
+    """프리미엄 인포그래픽 PDF를 이미지 비율 유지형(예: 1080x1920) 디지털 포스터 PDF로 저장한다."""
+    return _image_to_native_ratio_pdf_bytes(img, dpi=300, target_height_in=10.0)
 
 
 def make_png_bytes_from_image(img: Image.Image) -> bytes:
@@ -3762,7 +3772,7 @@ else:
 
         if st.session_state.hq_image is not None:
             st.markdown("#### 정밀 보정 프리미엄 인포그래픽 이미지")
-            st.caption("번들된 premium_infographic_reference.png를 gpt-image-2로 참고해 프리미엄 인포그래픽을 생성한 결과입니다. 프리미엄 레퍼런스, 현재 SMK, 대학 로고, 대학 로고 기반 색상 팔레트, PIUM+QR 카드, 대표도면, 그리고 일반 버전에서 사용된 적용분야 이미지를 모두 참조 이미지로 전달하여 기존 자산을 가능한 한 그대로 유지하면서 프리미엄 스타일로 생성합니다. 기존처럼 생성 후 로고/QR/대표도면/제목/IP/문의처를 다시 덮어씌우는 자동 후합성은 사용하지 않으며, 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
+            st.caption("번들된 premium_infographic_reference.png를 gpt-image-2로 참고해 1080x1920 세로형 프리미엄 인포그래픽을 생성한 결과입니다. 프리미엄 레퍼런스, 현재 SMK, 대학 로고, 대학 로고 기반 색상 팔레트, PIUM+QR 카드, 대표도면을 참조 이미지로 전달하여 프리미엄 스타일로 전체를 다시 구성합니다. 적용분야/제품과 시장현황도 프리미엄 버전에서 다시 렌더링하되, 특히 시장현황은 대학 브랜드 팔레트에 맞게 색감을 정렬하도록 유도합니다. 생성 후 별도의 자동 후합성은 사용하지 않으며, 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
             st.image(st.session_state.hq_image, use_container_width=True)
             d1, d2 = st.columns(2)
             with d1:
