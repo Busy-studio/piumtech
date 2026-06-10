@@ -3296,72 +3296,24 @@ def generate_reference_based_premium_infographic(
     piumlink_logo: Image.Image | None = None,
     base_smk_img: Image.Image | None = None,
 ) -> Image.Image:
-    """레퍼런스 기반 프리미엄 인포그래픽 생성.
-    후합성으로 강제로 덮지 않고, 프리미엄 레퍼런스 + 현재 SMK + 원본 자산들을
-    모두 입력 이미지로 제공한 뒤 gpt-image-2가 자연스럽게 활용하도록 한다.
-    실패 시 규칙 기반 렌더러로 fallback한다.
+    """안정형 프리미엄 인포그래픽 생성.
+
+    이전 방식처럼 gpt-image-2가 전체 페이지를 다시 그리면
+    섹션 잘림, 정렬 틀어짐, 글자 깨짐, 표/푸터 겹침이 발생할 수 있다.
+    따라서 실제 상담/제안용 출력에서는 규칙 기반 프리미엄 렌더러를 사용해
+    적용분야 이미지, 시장현황 그래프, 대표도면, 로고, QR, IP 표, 문의처를
+    모두 코드 좌표계 안에서 정확하게 배치한다.
     """
-    temp_paths: List[str] = []
-    try:
-        client = get_client()
-        ref_path = resolve_premium_reference_path()
-
-        # Reference images: style reference + current SMK + exact asset references.
-        temp_paths.append(ref_path)
-        if base_smk_img is not None:
-            temp_paths.append(_save_temp_png(base_smk_img, 'premium_base_smk_'))
-        if university_logo is not None:
-            temp_paths.append(_save_temp_png(university_logo, 'premium_univ_logo_'))
-        # Explicit brand palette reference: prevents the reference image's blue palette from overriding university-specific colors.
-        temp_paths.append(_save_temp_png(make_brand_palette_reference_card(university_logo), 'premium_brand_palette_'))
-        pium_qr_card = make_pium_qr_reference_card(pium_logo, qr_img, piumlink_logo)
-        temp_paths.append(_save_temp_png(pium_qr_card, 'premium_pium_qr_'))
-        if rep_img is not None:
-            temp_paths.append(_save_temp_png(rep_img, 'premium_rep_drawing_'))
-        prompt = build_premium_infographic_ai_prompt(
-            data,
-            contact,
-            university_logo=university_logo,
-        )
-
-        with ExitStack() as stack:
-            files = [stack.enter_context(open(p, 'rb')) for p in temp_paths]
-            result = client.images.edit(
-                model=PREMIUM_IMAGE_MODEL_FIXED,
-                image=files,
-                prompt=prompt,
-                size='1080x1920',
-            )
-        raw = _extract_generated_image_bytes(result)
-        generated = Image.open(BytesIO(raw)).convert('RGB')
-        return generated
-    except Exception:
-        # fallback: preserve operational stability
-        return make_high_quality_infographic_image(
-            data,
-            rep_img,
-            app_imgs,
-            contact,
-            university_logo=university_logo,
-            pium_logo=pium_logo,
-            qr_img=qr_img,
-            piumlink_logo=piumlink_logo,
-        )
-    finally:
-        # remove temporary files except bundled reference path
-        ref_abs = None
-        try:
-            ref_abs = os.path.abspath(resolve_premium_reference_path())
-        except Exception:
-            pass
-        for p in temp_paths:
-            try:
-                if ref_abs and os.path.abspath(p) == ref_abs:
-                    continue
-                if os.path.exists(p):
-                    os.remove(p)
-            except Exception:
-                pass
+    return make_high_quality_infographic_image(
+        data,
+        rep_img,
+        app_imgs,
+        contact,
+        university_logo=university_logo,
+        pium_logo=pium_logo,
+        qr_img=qr_img,
+        piumlink_logo=piumlink_logo,
+    )
 
 
 def make_high_quality_infographic_image(
@@ -3412,8 +3364,12 @@ def make_high_quality_infographic_image(
 
 
 def make_pdf_bytes_from_hq_image(img: Image.Image) -> bytes:
-    """프리미엄 인포그래픽 PDF를 이미지 비율 유지형(예: 1080x1920) 디지털 포스터 PDF로 저장한다."""
-    return _image_to_native_ratio_pdf_bytes(img, dpi=300, target_height_in=10.0)
+    """프리미엄 인포그래픽 PDF를 A4 300dpi급 이미지형 PDF로 저장한다.
+
+    안정형 프리미엄 렌더러는 A4 비율(2480x3508)에 맞춰 출력되므로,
+    PDF도 A4 페이지를 꽉 채우는 방식으로 저장한다.
+    """
+    return _image_to_a4_pdf_bytes(img, dpi=300)
 
 
 def make_png_bytes_from_image(img: Image.Image) -> bytes:
@@ -3750,8 +3706,8 @@ else:
         st.subheader("SMK 미리보기")
         st.image(st.session_state.brief_image, use_container_width=True)
 
-        if st.button("정밀 보정 프리미엄 이미지/PDF로 변환", use_container_width=True):
-            with st.spinner("레퍼런스 기반 프리미엄 인포그래픽을 생성 중..."):
+        if st.button("안정형 프리미엄 이미지/PDF로 변환", use_container_width=True):
+            with st.spinner("안정형 프리미엄 인포그래픽을 생성 중..."):
                 university_logo = get_logo_image(university) if use_logos else None
                 pium_logo = get_pium_logo_image() if use_logos else None
                 piumlink_logo = get_piumlink_logo_image() if use_logos else None
@@ -3772,7 +3728,7 @@ else:
 
         if st.session_state.hq_image is not None:
             st.markdown("#### 정밀 보정 프리미엄 인포그래픽 이미지")
-            st.caption("번들된 premium_infographic_reference.png를 gpt-image-2로 참고해 1080x1920 세로형 프리미엄 인포그래픽을 생성한 결과입니다. 프리미엄 레퍼런스, 현재 SMK, 대학 로고, 대학 로고 기반 색상 팔레트, PIUM+QR 카드, 대표도면을 참조 이미지로 전달하여 프리미엄 스타일로 전체를 다시 구성합니다. 적용분야/제품과 시장현황도 프리미엄 버전에서 다시 렌더링하되, 특히 시장현황은 대학 브랜드 팔레트에 맞게 색감을 정렬하도록 유도합니다. 생성 후 별도의 자동 후합성은 사용하지 않으며, 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
+            st.caption("정렬 안정성을 우선한 규칙 기반 프리미엄 인포그래픽입니다. 적용분야/제품, 시장현황, 기술개요, 대표도면, 기술 경쟁력, 지식재산권, 문의처를 코드 좌표계로 직접 배치하여 섹션 잘림·겹침·푸터 오차를 줄입니다. 로고/QR/대표도면/IP 표/문의처는 원본 데이터 기준으로 출력됩니다.")
             st.image(st.session_state.hq_image, use_container_width=True)
             d1, d2 = st.columns(2)
             with d1:
