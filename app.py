@@ -2139,34 +2139,6 @@ def _image_to_a4_pdf_bytes(img: Image.Image, dpi: int = 300) -> bytes:
     return out
 
 
-def _image_to_native_ratio_pdf_bytes(img: Image.Image, dpi: int = 300, target_height_in: float = 10.0) -> bytes:
-    """이미지 비율을 그대로 유지하는 세로형 디지털 포스터 PDF를 생성한다.
-    프리미엄 인포그래픽이 A4를 꼭 따르지 않아도 되는 경우,
-    1080x1920 같은 9:16 비율을 그대로 살려 상하 여백 없이 보이도록 사용한다.
-    """
-    src = img.convert("RGB")
-    src_ratio = src.width / max(1, src.height)
-    page_h_pt = target_height_in * 72.0
-    page_w_pt = page_h_pt * src_ratio
-
-    target_w_px = max(1, int(round(page_w_pt / 72 * dpi)))
-    target_h_px = max(1, int(round(page_h_pt / 72 * dpi)))
-    resampled = src.resize((target_w_px, target_h_px), Image.LANCZOS)
-    resampled = ImageEnhance.Sharpness(resampled).enhance(1.04)
-
-    png = BytesIO()
-    resampled.save(png, format="PNG", optimize=True)
-    png_bytes = png.getvalue()
-
-    doc = fitz.open()
-    page = doc.new_page(width=page_w_pt, height=page_h_pt)
-    rect = fitz.Rect(0, 0, page_w_pt, page_h_pt)
-    page.insert_image(rect, stream=png_bytes, keep_proportion=True)
-    out = doc.tobytes(deflate=True, garbage=4)
-    doc.close()
-    return out
-
-
 def make_pdf_bytes_from_image(img: Image.Image) -> bytes:
     # 기본 SMK PDF도 실제 A4 페이지로 저장해 PDF 뷰어 확대 시 품질 저하를 줄인다.
     return _image_to_a4_pdf_bytes(img, dpi=300)
@@ -2749,25 +2721,22 @@ def build_premium_infographic_ai_prompt(data: Dict[str, Any], contact: str, univ
     prompt = f"""
 You are given multiple reference images:
 - Image A: premium_infographic_reference.png. Use this as the MAIN design/style reference.
-- Image B: the current generated SMK page. Use this for the actual content, existing section order, and information architecture.
-- Image C: the original university logo asset. Use this exact logo visually in the top-left area. Do not redraw it into a different logo.
-- Image D: the original PIUM + QR reference card/block. Use this exact PIUM/QR block visually in the top-right area. Do not redraw it, restyle it, or create a second QR.
-- Image E: the original representative drawing. Use this exact drawing visually in the representative drawing panel. Do not replace it with a different diagram.
+- Image B: the current generated SMK page. Use this for the actual content, existing logos/QR block placement, representative drawing context, and information architecture.
+- Image C: the original university logo asset. Use this exact logo visually; do not redraw it into a different logo.
+- Image D: the original PIUM + QR reference card/block. Use this exact PIUM/QR block visually; do not create a second fake QR and do not duplicate the QR elsewhere.
+- Image E: the original representative drawing. Use this drawing visually as the representative drawing panel; do not replace it with a different diagram.
 
-Create ONE premium Korean technology infographic image based on Image A's layout quality and Image B's actual content. The final output must be a clean 1080x1920 vertical canvas that fills the frame fully with no unused borders or A4-style empty margins.
+Create ONE premium Korean technology infographic image based on Image A's layout quality and Image B's actual content.
 This is NOT a blank redesign. It is a premium restyling of the current SMK using the supplied assets.
 
 IMPORTANT ASSET + COLOR RULES:
 - The university logo's dominant color is the authoritative brand color for the whole premium infographic.
 - Do not let the generic blue reference override the university color identity.
-- Preserve the supplied university logo, PIUM+QR block, and representative drawing faithfully.
-- Do not hallucinate or redraw the university logo.
-- Do not hallucinate or redraw the PIUM logo or QR code.
+- Preserve the university logo faithfully and keep it clean, sharp, and undistorted in the top-left area.
+- Preserve the PIUM+QR block faithfully in the top-right area. Do not redraw it into a fake logo or fake QR code.
 - Do not create extra QR codes. There should be only one PIUM/QR block in the top-right area.
-- Do not replace the representative drawing.
-- The final premium image must already contain the assets correctly. Do not assume any later overlay or post-compositing step.
-- The applications/products section and the market-status section may be newly redrawn in premium style rather than pasted unchanged, but they must keep the same meaning and content structure as the current SMK.
-- In the market-status section, the chart bars, KPI cards, icons, and graphic color tone must harmonize with the same university brand palette used across the page.
+- Preserve the representative drawing faithfully in the representative drawing section. Do not replace it with a different diagram.
+- The final premium image itself must already contain the logo, PIUM+QR block, and representative drawing correctly. Do not rely on any later overlay or post-compositing step.
 
 Design target:
 - Visually close to Image A in layout quality and premium brochure polish, BUT do NOT copy Image A's blue color palette blindly.
@@ -2781,8 +2750,8 @@ Design target:
 - Stronger and more premium than the basic SMK.
 - No awkward overlaps, no duplicated logos/QR, no cropped section panels.
 - Keep all section order: header, applications/products, market status, technology overview, key differentiators, representative drawing, technical competitiveness, IP status, contact footer.
-- Application/product cards should be fully re-rendered in premium style using the existing SMK content, not necessarily the exact same source pictures.
-- Market status should be re-rendered as a year-by-year bar chart with KPI cards, while matching the same brand palette as the rest of the infographic.
+- Application/product cards should be full-color and visually rich.
+- Market status should use a year-by-year bar chart with KPI cards.
 - Overview and differentiators should use clean row cards with key phrases emphasized.
 - Technical competitiveness should show current limitations and technical advantages clearly.
 - IP status should be a neat table.
@@ -2899,17 +2868,6 @@ def make_brand_palette_reference_card(university_logo: Image.Image | None = None
 
 
 
-def normalize_premium_generation_canvas(img: Image.Image, target_size: tuple[int, int] = (1240, 1754)) -> Image.Image:
-    """AI 프리미엄 생성 결과를 내부 기준 캔버스(1240x1754)로 정규화한다.
-    현재 후처리 오버레이 좌표와 섹션 기준 박스가 모두 1240x1754 기준이므로,
-    모델 출력이 1024x1536처럼 다른 비율/해상도로 들어오면 먼저 기준 캔버스로 맞춘 뒤 보정해야
-    헤더, 대표도면, IP 표, 문의처 등이 정확히 정렬된다.
-    """
-    src = img.convert('RGB')
-    target_w, target_h = target_size
-    return ImageOps.fit(src, (target_w, target_h), method=Image.LANCZOS, centering=(0.5, 0.5))
-
-
 def _resample_qr(img: Image.Image, size: tuple[int,int]) -> Image.Image:
     src = img.convert('RGB')
     return ImageOps.contain(src, size, Image.NEAREST)
@@ -3011,9 +2969,8 @@ def _draw_exact_header_overlay(img: Image.Image, data: Dict[str, Any], universit
     black = (30,36,46,255)
     gray = (88,96,108,255)
     # clean exact text area while preserving overall background outside
-    # AI 생성 텍스트가 살짝 어긋나도 기존 글자가 비치지 않도록 박스를 조금 넉넉하게 정리
-    x1, y1 = int(168*sx), int(26*sy)
-    x2, y2 = int(998*sx), int(252*sy)
+    x1, y1 = int(176*sx), int(30*sy)
+    x2, y2 = int(990*sx), int(238*sy)
     d.rounded_rectangle((x1, y1, x2, y2), radius=max(16,int(22*sx)), fill=(255,255,255,238))
     lang = get_lang_code(data.get('language','ko'))
     kicker = f"PIUM Tech Offer x {data.get('university_display') or data.get('university','')} | {data.get('department_display') or data.get('department','')} | {data.get('professor','')} {label(lang,'prof_suffix')}"
@@ -3037,8 +2994,7 @@ def _draw_exact_ip_table_overlay(img: Image.Image, data: Dict[str, Any], univers
     lang=get_lang_code(data.get('language','ko'))
     ip=normalize_ip(data.get('ip',{}))
     # overwrite lower IP section with exact table
-    # 하단 표 영역은 경계가 드러나는 경우가 있어 아래쪽을 약간 더 여유 있게 덮는다.
-    box=(int(24*sx), int(1456*sy), int(1216*sx), int(1644*sy))
+    box=(int(24*sx), int(1460*sy), int(1216*sx), int(1638*sy))
     d.rounded_rectangle(box, radius=max(16,int(22*sx)), fill=(255,255,255,246), outline=line, width=max(1,int(2*sx)))
     d.text((box[0]+int(30*sx), box[1]+int(16*sy)), label(lang,'ip'), font=load_font(max(16,int(24*sx)), True), fill=primary)
     table_x, table_y = box[0]+int(20*sx), box[1]+int(64*sy)
@@ -3070,8 +3026,7 @@ def _draw_exact_contact_overlay(img: Image.Image, contact: str, data: Dict[str, 
     theme=extract_logo_theme(university_logo)
     primary=ensure_dark(theme.get('primary',(0,55,135)))
     accent=theme.get('accent', mix(primary,(0,175,190),0.35))
-    # IP 영역과 맞닿는 경계 오차를 흡수하기 위해 footer 시작점을 조금 위로 올린다.
-    footer=(int(24*sx), int(1642*sy), int(1216*sx), int(1732*sy))
+    footer=(int(24*sx), int(1650*sy), int(1216*sx), int(1730*sy))
     # gradient footer
     w=max(1, footer[2]-footer[0]); h=max(1, footer[3]-footer[1])
     grad=Image.new('RGB',(w,h),primary)
@@ -3296,24 +3251,68 @@ def generate_reference_based_premium_infographic(
     piumlink_logo: Image.Image | None = None,
     base_smk_img: Image.Image | None = None,
 ) -> Image.Image:
-    """안정형 프리미엄 인포그래픽 생성.
-
-    이전 방식처럼 gpt-image-2가 전체 페이지를 다시 그리면
-    섹션 잘림, 정렬 틀어짐, 글자 깨짐, 표/푸터 겹침이 발생할 수 있다.
-    따라서 실제 상담/제안용 출력에서는 규칙 기반 프리미엄 렌더러를 사용해
-    적용분야 이미지, 시장현황 그래프, 대표도면, 로고, QR, IP 표, 문의처를
-    모두 코드 좌표계 안에서 정확하게 배치한다.
+    """레퍼런스 기반 프리미엄 인포그래픽 생성.
+    후합성으로 강제로 덮지 않고, 프리미엄 레퍼런스 + 현재 SMK + 원본 자산들을
+    모두 입력 이미지로 제공한 뒤 gpt-image-2가 자연스럽게 활용하도록 한다.
+    실패 시 규칙 기반 렌더러로 fallback한다.
     """
-    return make_high_quality_infographic_image(
-        data,
-        rep_img,
-        app_imgs,
-        contact,
-        university_logo=university_logo,
-        pium_logo=pium_logo,
-        qr_img=qr_img,
-        piumlink_logo=piumlink_logo,
-    )
+    temp_paths: List[str] = []
+    try:
+        client = get_client()
+        ref_path = resolve_premium_reference_path()
+        prompt = build_premium_infographic_ai_prompt(data, contact, university_logo=university_logo)
+
+        # Reference images: style reference + current SMK + exact asset references.
+        temp_paths.append(ref_path)
+        if base_smk_img is not None:
+            temp_paths.append(_save_temp_png(base_smk_img, 'premium_base_smk_'))
+        if university_logo is not None:
+            temp_paths.append(_save_temp_png(university_logo, 'premium_univ_logo_'))
+        # Explicit brand palette reference: prevents the reference image's blue palette from overriding university-specific colors.
+        temp_paths.append(_save_temp_png(make_brand_palette_reference_card(university_logo), 'premium_brand_palette_'))
+        pium_qr_card = make_pium_qr_reference_card(pium_logo, qr_img, piumlink_logo)
+        temp_paths.append(_save_temp_png(pium_qr_card, 'premium_pium_qr_'))
+        if rep_img is not None:
+            temp_paths.append(_save_temp_png(rep_img, 'premium_rep_drawing_'))
+
+        with ExitStack() as stack:
+            files = [stack.enter_context(open(p, 'rb')) for p in temp_paths]
+            result = client.images.edit(
+                model=PREMIUM_IMAGE_MODEL_FIXED,
+                image=files,
+                prompt=prompt,
+                size='1024x1536',
+            )
+        raw = _extract_generated_image_bytes(result)
+        generated = Image.open(BytesIO(raw)).convert('RGB')
+        return generated
+    except Exception:
+        # fallback: preserve operational stability
+        return make_high_quality_infographic_image(
+            data,
+            rep_img,
+            app_imgs,
+            contact,
+            university_logo=university_logo,
+            pium_logo=pium_logo,
+            qr_img=qr_img,
+            piumlink_logo=piumlink_logo,
+        )
+    finally:
+        # remove temporary files except bundled reference path
+        ref_abs = None
+        try:
+            ref_abs = os.path.abspath(resolve_premium_reference_path())
+        except Exception:
+            pass
+        for p in temp_paths:
+            try:
+                if ref_abs and os.path.abspath(p) == ref_abs:
+                    continue
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
 
 
 def make_high_quality_infographic_image(
@@ -3364,11 +3363,7 @@ def make_high_quality_infographic_image(
 
 
 def make_pdf_bytes_from_hq_image(img: Image.Image) -> bytes:
-    """프리미엄 인포그래픽 PDF를 A4 300dpi급 이미지형 PDF로 저장한다.
-
-    안정형 프리미엄 렌더러는 A4 비율(2480x3508)에 맞춰 출력되므로,
-    PDF도 A4 페이지를 꽉 채우는 방식으로 저장한다.
-    """
+    """프리미엄 인포그래픽 PDF를 실제 A4 300dpi급 이미지형 PDF로 저장한다."""
     return _image_to_a4_pdf_bytes(img, dpi=300)
 
 
@@ -3706,8 +3701,8 @@ else:
         st.subheader("SMK 미리보기")
         st.image(st.session_state.brief_image, use_container_width=True)
 
-        if st.button("안정형 프리미엄 이미지/PDF로 변환", use_container_width=True):
-            with st.spinner("안정형 프리미엄 인포그래픽을 생성 중..."):
+        if st.button("프리미엄 이미지/PDF로 변환", use_container_width=True):
+            with st.spinner("레퍼런스 기반 프리미엄 인포그래픽을 생성 중..."):
                 university_logo = get_logo_image(university) if use_logos else None
                 pium_logo = get_pium_logo_image() if use_logos else None
                 piumlink_logo = get_piumlink_logo_image() if use_logos else None
@@ -3727,8 +3722,8 @@ else:
                 st.session_state.hq_pdf_bytes = make_pdf_bytes_from_hq_image(hq_image)
 
         if st.session_state.hq_image is not None:
-            st.markdown("#### 정밀 보정 프리미엄 인포그래픽 이미지")
-            st.caption("정렬 안정성을 우선한 규칙 기반 프리미엄 인포그래픽입니다. 적용분야/제품, 시장현황, 기술개요, 대표도면, 기술 경쟁력, 지식재산권, 문의처를 코드 좌표계로 직접 배치하여 섹션 잘림·겹침·푸터 오차를 줄입니다. 로고/QR/대표도면/IP 표/문의처는 원본 데이터 기준으로 출력됩니다.")
+            st.markdown("#### 프리미엄 인포그래픽 이미지")
+            st.caption("번들된 premium_infographic_reference.png를 gpt-image-2로 직접 참고해 프리미엄 인포그래픽을 생성한 결과입니다. 프리미엄 레퍼런스, 현재 SMK, 대학 로고, 대학 로고 기반 색상 팔레트, PIUM+QR 카드, 대표도면을 참조 이미지로 전달해 전체를 프리미엄 스타일로 다시 구성합니다. 별도의 후합성 없이 생성 결과 자체를 그대로 사용하며, 로고와 대표도면은 참조 이미지 기반으로 최대한 안정적으로 보존하도록 유도합니다. 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
             st.image(st.session_state.hq_image, use_container_width=True)
             d1, d2 = st.columns(2)
             with d1:
