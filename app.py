@@ -514,6 +514,62 @@ def extract_patent_text(pdf_path: str) -> str:
     return text[:60000]
 
 
+def extract_application_metadata_from_text(patent_text: str) -> Dict[str, str]:
+    """공개공보 등에서 출원번호/출원일자를 직접 추출한다.
+    출원명세서처럼 해당 정보가 없으면 빈 문자열을 반환한다.
+    """
+    text = patent_text or ""
+    result = {"application_number": "", "application_date": ""}
+
+    app_no_patterns = [
+        r"(?:출원번호|출원 번호|Application\s*(?:No\.?|Number))\s*[:：]?\s*([0-9]{2,4}[-\s]?[0-9]{4,8})",
+        r"\((?:21|20)\)\s*출원번호\s*[:：]?\s*([0-9-]{8,20})",
+    ]
+    for pat in app_no_patterns:
+        m = re.search(pat, text, re.I)
+        if m:
+            result["application_number"] = re.sub(r"\s+", "", m.group(1)).strip()
+            break
+
+    app_date_patterns = [
+        r"(?:출원일자|출원 일자|출원일|Application\s*Date)\s*[:：]?\s*((?:19|20)\d{2}[.\-/년\s]+\d{1,2}[.\-/월\s]+\d{1,2}\.?\s*일?)",
+        r"\((?:22|21)\)\s*출원일\s*[:：]?\s*((?:19|20)\d{2}[.\-/년\s]+\d{1,2}[.\-/월\s]+\d{1,2}\.?\s*일?)",
+    ]
+    for pat in app_date_patterns:
+        m = re.search(pat, text, re.I)
+        if m:
+            raw = m.group(1).strip()
+            nums = re.findall(r"\d+", raw)
+            if len(nums) >= 3:
+                result["application_date"] = f"{int(nums[0]):04d}.{int(nums[1]):02d}.{int(nums[2]):02d}"
+            else:
+                result["application_date"] = raw
+            break
+    return result
+
+
+def format_manual_application_date(value) -> str:
+    if not value:
+        return ""
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y.%m.%d")
+    return str(value).strip()
+
+
+def ip_label(lang: str, key: str, ip: Dict[str, Any]) -> str:
+    """등록정보가 없으면 출력 라벨에서 등록번호/등록일자 문구를 제거한다."""
+    has_registration = bool(str(ip.get("registration_number") or "").strip() or str(ip.get("registration_date") or "").strip())
+    if has_registration:
+        return label(lang, key)
+    simple = {
+        "ko": {"app_no": "출원번호", "app_date": "출원일자"},
+        "en": {"app_no": "Application No.", "app_date": "Application Date"},
+        "zh": {"app_no": "申请号", "app_date": "申请日期"},
+        "ja": {"app_no": "出願番号", "app_date": "出願日"},
+    }
+    return simple.get(lang, simple["ko"]).get(key, label(lang, key))
+
+
 def _render_page_image(doc: fitz.Document, page_index: int, zoom: float = 3.2) -> Image.Image:
     page = doc[page_index]
     pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
@@ -2077,8 +2133,8 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     for xx in [c1, c2]:
         d.line((xx, table_y, xx, table_y+table_h), fill=card_line, width=1)
     draw_centered_wrapped(d, (table_x+8, table_y+4, c1-8, table_y+header_h2-2), label(lang, "invention"), load_font(19, True), black, max_lines=1)
-    draw_centered_wrapped(d, (c1+8, table_y+3, c2-8, table_y+header_h2-2), label(lang, "app_no"), load_font(14, True), black, max_lines=2, line_gap=1)
-    draw_centered_wrapped(d, (c2+8, table_y+3, table_x+table_w-8, table_y+header_h2-2), label(lang, "app_date"), load_font(14, True), black, max_lines=2, line_gap=1)
+    draw_centered_wrapped(d, (c1+8, table_y+3, c2-8, table_y+header_h2-2), ip_label(lang, "app_no", ip), load_font(14, True), black, max_lines=2, line_gap=1)
+    draw_centered_wrapped(d, (c2+8, table_y+3, table_x+table_w-8, table_y+header_h2-2), ip_label(lang, "app_date", ip), load_font(14, True), black, max_lines=2, line_gap=1)
     draw_centered_wrapped(d, (table_x+12, table_y+header_h2+8, c1-12, table_y+table_h-8), ip["title"] or data.get("original_title", ""), load_font(15, False), black, max_lines=2, line_gap=2)
     num_text = f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number']
     date_text = f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date']
@@ -2652,8 +2708,8 @@ def compose_infographic_brief(
     for xx in [c1, c2]:
         d.line((xx, table_y, xx, table_y+table_h), fill=line, width=1)
     draw_centered_wrapped(d, (table_x+8, table_y+4, c1-8, table_y+header_h-2), label(lang, 'invention'), load_font(15, True), (255,255,255), max_lines=1)
-    draw_centered_wrapped(d, (c1+8, table_y+4, c2-8, table_y+header_h-2), label(lang, 'app_no'), load_font(12, True), (255,255,255), max_lines=2, line_gap=1)
-    draw_centered_wrapped(d, (c2+8, table_y+4, table_x+table_w-8, table_y+header_h-2), label(lang, 'app_date'), load_font(12, True), (255,255,255), max_lines=2, line_gap=1)
+    draw_centered_wrapped(d, (c1+8, table_y+4, c2-8, table_y+header_h-2), ip_label(lang, 'app_no', ip), load_font(12, True), (255,255,255), max_lines=2, line_gap=1)
+    draw_centered_wrapped(d, (c2+8, table_y+4, table_x+table_w-8, table_y+header_h-2), ip_label(lang, 'app_date', ip), load_font(12, True), (255,255,255), max_lines=2, line_gap=1)
     draw_centered_wrapped(d, (table_x+12, table_y+header_h+10, c1-12, table_y+table_h-8), ip['title'] or data.get('original_title', ''), load_font(14, False), black, max_lines=2, line_gap=2)
     num_text = f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number']
     date_text = f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date']
@@ -3546,8 +3602,8 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
         shp=slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, px(xx), px(table_y), px(1), px(table_h))
         shp.fill.solid(); shp.fill.fore_color.rgb=RGBColor(*line); shp.line.fill.background()
     add_textbox(slide, table_x+8, table_y+7, col1-16, 26, label(lang, "invention"), 11, True, black, align=PP_ALIGN.CENTER)
-    add_textbox(slide, table_x+col1+8, table_y+3, col2-16, 34, label(lang, "app_no"), 8.3, True, black, align=PP_ALIGN.CENTER)
-    add_textbox(slide, table_x+col1+col2+8, table_y+3, col3-16, 34, label(lang, "app_date"), 8.3, True, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, table_x+col1+8, table_y+3, col2-16, 34, ip_label(lang, "app_no", ip), 8.3, True, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, table_x+col1+col2+8, table_y+3, col3-16, 34, ip_label(lang, "app_date", ip), 8.3, True, black, align=PP_ALIGN.CENTER)
     add_textbox(slide, table_x+12, table_y+48, col1-24, 56, ip["title"] or data.get("original_title",""), 8.4, False, black, align=PP_ALIGN.CENTER)
     add_textbox(slide, table_x+col1+8, table_y+48, col2-16, 56, f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number'], 10, False, black, align=PP_ALIGN.CENTER)
     add_textbox(slide, table_x+col1+col2+8, table_y+48, col3-16, 56, f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date'], 10, False, black, align=PP_ALIGN.CENTER)
@@ -3617,6 +3673,12 @@ with st.sidebar:
     output_language = get_lang_code(output_language_label)
 
     st.divider()
+    st.subheader("출원정보 보완 입력")
+    st.caption("공개공보에서 자동 확인되지 않는 출원명세서의 경우에만 입력하세요.")
+    manual_application_number = st.text_input("출원번호", placeholder="예: 10-2026-0000000")
+    manual_application_date = st.date_input("출원일자", value=None, format="YYYY.MM.DD")
+
+    st.divider()
     st.subheader("문의처")
     org = st.text_input("소속", placeholder="예: 부산대학교 산학협력단")
     name = st.text_input("이름", placeholder="예: 고길동")
@@ -3646,6 +3708,17 @@ if generate_btn:
     with st.spinner("PDF 분석 중..."):
         pdf_path = save_uploaded_file(uploaded_pdf)
         patent_text = extract_patent_text(pdf_path)
+        extracted_application = extract_application_metadata_from_text(patent_text)
+        final_application_number = (extracted_application.get("application_number") or manual_application_number or "").strip()
+        final_application_date = (extracted_application.get("application_date") or format_manual_application_date(manual_application_date) or "").strip()
+        missing = []
+        if not final_application_number:
+            missing.append("출원번호")
+        if not final_application_date:
+            missing.append("출원일자")
+        if missing:
+            st.error("업로드한 파일에서 " + "·".join(missing) + "를 확인할 수 없습니다. 왼쪽 '출원정보 보완 입력'에서 입력한 뒤 다시 생성하세요.")
+            st.stop()
         rep_img = extract_representative_drawing(pdf_path)
         qr_img = extract_qr_code_from_first_page(pdf_path)
         st.session_state.pdf_path = pdf_path
@@ -3656,6 +3729,9 @@ if generate_btn:
         data = analyze_patent_with_gpt(patent_text, university, department, professor, output_language)
         data["university"] = university; data["department"] = department; data["professor"] = professor; data["language"] = output_language
         data = localize_smk_data(data, output_language, university, department, professor)
+        data.setdefault("ip", {})
+        data["ip"]["application_number"] = final_application_number
+        data["ip"]["application_date"] = final_application_date
 
     with st.spinner("시장현황 검색 및 그래프 구성 중..."):
         data["market_info"] = generate_market_info_with_web(data)
