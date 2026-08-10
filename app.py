@@ -514,22 +514,41 @@ def extract_patent_text(pdf_path: str) -> str:
     return text[:60000]
 
 
-def extract_application_metadata_from_text(patent_text: str) -> Dict[str, str]:
+def extract_first_page_text(pdf_path: str) -> str:
+    """공개공보의 공식 서지정보 판독용 1페이지 텍스트만 반환한다."""
+    doc = fitz.open(pdf_path)
+    try:
+        if doc.page_count < 1:
+            return ""
+        return doc[0].get_text("text") or ""
+    finally:
+        doc.close()
+
+
+def extract_application_metadata_from_text(patent_text: str, first_page_text: str = "") -> Dict[str, str]:
     """공개공보 등에서 출원번호/출원일자를 직접 추출한다.
-    출원명세서처럼 해당 정보가 없으면 빈 문자열을 반환한다.
+
+    출원번호는 공개공보 1페이지의 공식 서지정보 영역에서만 읽고,
+    한국 출원번호 형식(00-0000-0000000)에 정확히 맞는 값만 인정한다.
+    출원일자 추출은 기존 로직을 유지한다.
     """
     text = patent_text or ""
+    page1 = first_page_text or ""
     result = {"application_number": "", "application_date": ""}
 
+    # 공개공보 1페이지의 (21) 출원번호/출원번호 표기 주변에서만 판독한다.
+    # 본문·인용문헌 등에 등장하는 다른 번호를 출원번호로 오인하지 않는다.
     app_no_patterns = [
-        r"(?:출원번호|출원 번호|Application\s*(?:No\.?|Number))\s*[:：]?\s*([0-9]{2,4}[-\s]?[0-9]{4,8})",
-        r"\((?:21|20)\)\s*출원번호\s*[:：]?\s*([0-9-]{8,20})",
+        r"\(21\)\s*출원번호\s*[:：]?\s*(\d{2}\s*-\s*\d{4}\s*-\s*\d{7})(?!\d)",
+        r"출원\s*번호\s*[:：]?\s*(\d{2}\s*-\s*\d{4}\s*-\s*\d{7})(?!\d)",
     ]
     for pat in app_no_patterns:
-        m = re.search(pat, text, re.I)
+        m = re.search(pat, page1, re.I)
         if m:
-            result["application_number"] = re.sub(r"\s+", "", m.group(1)).strip()
-            break
+            candidate = re.sub(r"\s+", "", m.group(1)).strip()
+            if re.fullmatch(r"\d{2}-\d{4}-\d{7}", candidate):
+                result["application_number"] = candidate
+                break
 
     app_date_patterns = [
         r"(?:출원일자|출원 일자|출원일|Application\s*Date)\s*[:：]?\s*((?:19|20)\d{2}[.\-/년\s]+\d{1,2}[.\-/월\s]+\d{1,2}\.?\s*일?)",
@@ -3708,7 +3727,8 @@ if generate_btn:
     with st.spinner("PDF 분석 중..."):
         pdf_path = save_uploaded_file(uploaded_pdf)
         patent_text = extract_patent_text(pdf_path)
-        extracted_application = extract_application_metadata_from_text(patent_text)
+        first_page_text = extract_first_page_text(pdf_path)
+        extracted_application = extract_application_metadata_from_text(patent_text, first_page_text=first_page_text)
         final_application_number = (extracted_application.get("application_number") or manual_application_number or "").strip()
         final_application_date = (extracted_application.get("application_date") or format_manual_application_date(manual_application_date) or "").strip()
         missing = []
