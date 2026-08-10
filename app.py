@@ -885,55 +885,201 @@ def _extract_best_embedded_image_from_page(doc: fitz.Document, page_index: int, 
         return None
 
 
-def _parse_representative_figure_number(first_text: str) -> str | None:
-    m = re.search(r"대\s*표\s*도\s*[-–—]?\s*도\s*([0-9]+)", first_text)
-    return m.group(1) if m else None
+def _parse_representative_figure_number(text: str) -> str | None:
+    """요약서/공보의 '대표도 - 도N' 또는 '[대표도] 도 N' 표기에서 번호를 읽는다."""
+    if not text:
+        return None
+    patterns = [
+        r"대\s*표\s*도\s*[-–—:]?\s*(?:도\s*)?([0-9]+)",
+        r"\[\s*대\s*표\s*도\s*\]\s*(?:도\s*)?([0-9]+)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.I)
+        if m:
+            return m.group(1)
+    return None
 
-def extract_representative_drawing(pdf_path: str) -> Image.Image:
+
+def _is_target_figure_page(text: str, rep_no: str) -> bool:
+    """OCR/텍스트에서 '도 N' 도면 페이지인지 보수적으로 판정한다."""
+    if not text or not rep_no:
+        return False
+    t = re.sub(r"\s+", " ", text)
+    pats = [
+        rf"\[\s*도\s*{re.escape(rep_no)}\s*\]",
+        rf"(?:^|\n)\s*도\s*{re.escape(rep_no)}\s*(?:$|\n)",
+        rf"\[\s*도면\s*\].{{0,120}}\[?\s*도\s*{re.escape(rep_no)}\s*\]?",
+    ]
+    return any(re.search(p, text, flags=re.I | re.S | re.M) for p in pats)
+
+
+def _crop_drawing_from_rendered_page(page_img: Image.Image) -> Image.Image:
+    """스캔 도면 페이지에서 제목/날짜/페이지번호를 제외하고 실제 도면 영역만 추출한다.
+
+    스캔 PDF는 페이지 전체가 하나의 이미지 객체이므로 embedded-image 추출을 쓰면 안 된다.
+    도면은 일반 본문보다 행 방향의 비백색 픽셀 밀도가 높고 연속 폭이 넓다는 점을 이용한다.
+    """
+    import numpy as np
+
+    im = page_img.convert("RGB")
+    w, h = im.size
+    # 상단 날짜/도면 제목, 하단 페이지 번호를 우선 제외한다.
+    x0, x1 = int(w * 0.045), int(w * 0.955)
+    y0, y1 = int(h * 0.09), int(h * 0.90)
+    roi = im.crop((x0, y0, x1, y1))
+    arr = np.asarray(roi)
+    mask = np.any(arr < 245, axis=2)
+    row_counts = mask.sum(axis=1)
+
+    # 도면처럼 가로로 넓게 차지하는 행만 활성화한다. 짧은 '[도 1]' 제목행은 자연히 탈락한다.
+    row_thr = max(20, int(roi.width * 0.075))
+    active = row_counts > row_thr
+
+    clusters = []
+    st = None
+    gap = 0
+    for i, on in enumerate(active):
+        if on:
+            if st is None:
+                st = i
+            gap = 0
+        elif st is not None:
+            gap += 1
+            # 그림 내부의 흰 여백은 어느 정도 연결해서 하나의 클러스터로 본다.
+            if gap > max(16, int(roi.height * 0.018)):
+                en = i - gap + 1
+                if en - st > 35:
+                    pix = int(row_counts[st:en].sum())
+                    clusters.append((st, en, pix))
+                st = None
+                gap = 0
+    if st is not None:
+        en = len(active)
+        if en - st > 35:
+            clusters.append((st, en, int(row_counts[st:en].sum())))
+
+    if clusters:
+        # 넓이/픽셀량/세로길이를 함께 반영해 실제 그림 블록을 선택한다.
+        sy1, sy2, _ = max(clusters, key=lambda z: (z[2] * max(1, z[1] - z[0])))
+        pad_y = max(18, int(roi.height * 0.02))
+        sy1, sy2 = max(0, sy1 - pad_y), min(roi.height, sy2 + pad_y)
+        sub = roi.crop((0, sy1, roi.width, sy2))
+    else:
+        sub = roi
+
+    arr2 = np.asarray(sub)
+    mask2 = np.any(arr2 < 245, axis=2)
+    col_counts = mask2.sum(axis=0)
+    col_thr = max(8, int(sub.height * 0.025))
+    xs = np.where(col_counts > col_thr)[0]
+    ys = np.where(mask2.sum(axis=1) > max(8, int(sub.width * 0.02)))[0]
+    if len(xs) and len(ys):
+        pad_x = max(18, int(sub.width * 0.025))
+        pad_y = max(14, int(sub.height * 0.03))
+        sub = sub.crop((
+            max(0, int(xs.min()) - pad_x),
+            max(0, int(ys.min()) - pad_y),
+            min(sub.width, int(xs.max()) + pad_x + 1),
+            min(sub.height, int(ys.max()) + pad_y + 1),
+        ))
+
+    return _smart_trim_visual(sub, threshold=248, padding=14)
+
+
+def extract_representative_drawing(
+    pdf_path: str,
+    page_texts: list[str] | None = None,
+    ocr_used: bool = False,
+) -> Image.Image:
     """대표도면 추출.
-    1순위: 1페이지에 포함된 대표도 이미지 객체를 직접 추출
-    2순위: '대 표 도 - 도N' 번호를 읽어 도면 페이지에서 해당 도면 이미지 객체를 추출
-    3순위: 기존 렌더링 크롭 fallback
+
+    - 텍스트 PDF: 기존 embedded-image 추출을 우선 사용.
+    - 스캔 PDF: OCR된 page_texts에서 '대표도 - 도N'과 '[도 N]' 페이지를 찾은 뒤,
+      해당 페이지를 렌더링하여 실제 도면 영역만 크롭한다.
+    - OCR 결과를 이 함수에 전달해 메타 분석과 대표도면 탐색이 같은 페이지 텍스트를 공유한다.
     """
     doc = fitz.open(pdf_path)
     if len(doc) == 0:
         doc.close()
         return Image.new("RGB", (800, 600), "white")
 
-    first_text = doc[0].get_text("text")
+    if page_texts is None:
+        page_texts = [page.get_text("text") or "" for page in doc]
+    if len(page_texts) < len(doc):
+        page_texts = list(page_texts) + [""] * (len(doc) - len(page_texts))
 
-    # 1페이지에 대표도가 이미지 객체로 들어있는 경우가 가장 많음.
+    # 대표도 번호는 특정 1페이지만 가정하지 않는다. 출원서의 요약서는 뒤쪽에 있을 수 있다.
+    rep_no = None
+    rep_source_page = None
+    for i, txt in enumerate(page_texts):
+        n = _parse_representative_figure_number(txt)
+        if n:
+            rep_no = n
+            rep_source_page = i
+            break
+
+    # 스캔 PDF: 페이지 전체가 embedded image이므로 embedded 추출 금지.
+    if ocr_used:
+        if rep_no:
+            for i, txt in enumerate(page_texts):
+                if i == rep_source_page:
+                    continue
+                if _is_target_figure_page(txt, rep_no):
+                    rendered = _render_page_image(doc, i, zoom=3.2)
+                    doc.close()
+                    return _crop_drawing_from_rendered_page(rendered)
+
+        # 대표도 번호를 못 찾았더라도 OCR에서 명확한 [도면]/[도 1] 페이지가 있으면 첫 도면을 fallback.
+        for i, txt in enumerate(page_texts):
+            if re.search(r"\[\s*도면\s*\]", txt or "") and re.search(r"\[?\s*도\s*[0-9]+\s*\]?", txt or ""):
+                rendered = _render_page_image(doc, i, zoom=3.2)
+                doc.close()
+                return _crop_drawing_from_rendered_page(rendered)
+
+        # 최후 fallback도 1페이지 본문 크롭이 아니라, 문서 후반의 시각 밀도 높은 페이지를 선택한다.
+        best = None
+        for i in range(len(doc)):
+            rendered = _render_page_image(doc, i, zoom=1.5)
+            arr = np.asarray(rendered.convert("L"))
+            ink = float((arr < 235).mean())
+            # 도면이 주로 등장하는 후반부에 약간 가중치. 단, 과도한 휴리스틱은 피하고 시각 밀도만 사용.
+            score = ink
+            if best is None or score > best[0]:
+                best = (score, i)
+        idx = best[1] if best else 0
+        rendered = _render_page_image(doc, idx, zoom=3.2)
+        doc.close()
+        return _crop_drawing_from_rendered_page(rendered)
+
+    # 텍스트 PDF에서는 1페이지 embedded 대표도가 있으면 우선 사용한다.
     first_embedded = _extract_best_embedded_image_from_page(doc, 0, prefer_square=False, min_area=30000)
     if first_embedded is not None and first_embedded.width > 160 and first_embedded.height > 120:
         doc.close()
         return first_embedded
 
-    # 대표도 번호를 기준으로 도면 페이지에서 실제 이미지 객체 추출
-    rep_no = _parse_representative_figure_number(first_text)
+    # 대표도 번호 기준으로 실제 도면 페이지를 찾는다.
     if rep_no:
-        patterns = [f"도면{rep_no}", f"도면 {rep_no}", f"도 {rep_no}"]
-        for i in range(1, len(doc)):
-            t = doc[i].get_text("text")
-            if any(p in t for p in patterns):
+        for i, txt in enumerate(page_texts):
+            if _is_target_figure_page(txt, rep_no):
                 img = _extract_best_embedded_image_from_page(doc, i, prefer_square=False, min_area=25000)
                 if img is not None:
                     doc.close()
                     return img
+                rendered = _render_page_image(doc, i, zoom=3.2)
+                doc.close()
+                return _crop_drawing_from_rendered_page(rendered)
 
     # fallback: 도면 페이지 중 큰 이미지 객체 우선 추출
-    for i in range(1, len(doc)):
-        t = doc[i].get_text("text")
-        if "도면" in t or "도 " in t:
+    for i, txt in enumerate(page_texts):
+        if "도면" in (txt or "") or re.search(r"(?:^|\n)\s*\[?도\s*[0-9]+\]?", txt or ""):
             img = _extract_best_embedded_image_from_page(doc, i, prefer_square=False, min_area=25000)
             if img is not None:
                 doc.close()
                 return img
 
-    # 최후 fallback: 1페이지 하단 크롭
     first_img = _render_page_image(doc, 0, zoom=3.2)
     doc.close()
     return _crop_representative_from_first_page(first_img)
-
 
 def extract_qr_code_from_first_page(pdf_path: str) -> Image.Image | None:
     """등록공보 1페이지 우측 상단 QR 코드만 추출한다.
@@ -3829,7 +3975,7 @@ if generate_btn:
             st.error("출원번호 및 출원일자를 확인할 수 없습니다. 왼쪽 입력정보에서 직접 입력해주세요.")
             st.stop()
 
-        rep_img = extract_representative_drawing(pdf_path)
+        rep_img = extract_representative_drawing(pdf_path, page_texts=page_texts, ocr_used=ocr_used)
         qr_img = extract_qr_code_from_first_page(pdf_path)
         st.session_state.pdf_path = pdf_path
         st.session_state.rep_img = rep_img
