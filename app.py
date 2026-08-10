@@ -129,6 +129,20 @@ def get_lang_code(value: str | None) -> str:
 def label(lang: str, key: str) -> str:
     return LABELS.get(get_lang_code(lang), LABELS["ko"]).get(key, key)
 
+
+def ip_table_label(lang: str, key: str, ip: Dict[str, Any]) -> str:
+    """등록정보가 없으면 출원번호/출원일자만 표시한다."""
+    has_registration = bool((ip or {}).get("registration_number") or (ip or {}).get("registration_date"))
+    if has_registration:
+        return label(lang, key)
+    plain = {
+        "ko": {"app_no": "출원번호", "app_date": "출원일자"},
+        "en": {"app_no": "Application No.", "app_date": "Application Date"},
+        "zh": {"app_no": "申请号", "app_date": "申请日期"},
+        "ja": {"app_no": "出願番号", "app_date": "出願日"},
+    }
+    return plain.get(get_lang_code(lang), plain["ko"]).get(key, label(lang, key))
+
 def has_hangul_text(s: str) -> bool:
     return bool(re.search(r"[가-힣]", str(s or "")))
 
@@ -507,86 +521,156 @@ def save_uploaded_file(uploaded_file) -> str:
         tmp.write(uploaded_file.getbuffer())
         return tmp.name
 
-def extract_patent_text(pdf_path: str) -> str:
-    doc = fitz.open(pdf_path)
-    text = "\\n".join([p.get_text("text") for p in doc])
-    doc.close()
-    return text[:60000]
+APPLICATION_NO_RE = re.compile(r"(?<!\d)(\d{2}-\d{4}-\d{7})(?!\d)")
+DATE_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})\s*(?:[.\-/년])\s*(0?[1-9]|1[0-2])\s*(?:[.\-/월])\s*(0?[1-9]|[12]\d|3[01])\s*(?:일)?")
 
 
-def extract_first_page_text(pdf_path: str) -> str:
-    """공개공보의 공식 서지정보 판독용 1페이지 텍스트만 반환한다."""
-    doc = fitz.open(pdf_path)
+def _has_searchable_pdf_text(text: str) -> bool:
+    """텍스트 레이어가 실제로 존재하는지 확인한다. 공백/기호만 있으면 스캔 PDF로 본다."""
+    return bool(re.search(r"[0-9A-Za-z가-힣]", text or ""))
+
+
+def _ocr_page_with_openai(page: fitz.Page, page_no: int) -> str:
+    """텍스트 레이어가 전혀 없는 스캔 PDF에서만 사용하는 OCR fallback."""
     try:
-        if doc.page_count < 1:
-            return ""
-        return doc[0].get_text("text") or ""
-    finally:
-        doc.close()
-
-
-def extract_application_metadata_from_text(patent_text: str, first_page_text: str = "") -> Dict[str, str]:
-    """공개공보 등에서 출원번호/출원일자를 직접 추출한다.
-
-    출원번호는 공개공보 1페이지의 공식 서지정보 영역에서만 읽고,
-    한국 출원번호 형식(00-0000-0000000)에 정확히 맞는 값만 인정한다.
-    출원일자 추출은 기존 로직을 유지한다.
-    """
-    text = patent_text or ""
-    page1 = first_page_text or ""
-    result = {"application_number": "", "application_date": ""}
-
-    # 공개공보 1페이지의 (21) 출원번호/출원번호 표기 주변에서만 판독한다.
-    # 본문·인용문헌 등에 등장하는 다른 번호를 출원번호로 오인하지 않는다.
-    app_no_patterns = [
-        r"\(21\)\s*출원번호\s*[:：]?\s*(\d{2}\s*-\s*\d{4}\s*-\s*\d{7})(?!\d)",
-        r"출원\s*번호\s*[:：]?\s*(\d{2}\s*-\s*\d{4}\s*-\s*\d{7})(?!\d)",
-    ]
-    for pat in app_no_patterns:
-        m = re.search(pat, page1, re.I)
-        if m:
-            candidate = re.sub(r"\s+", "", m.group(1)).strip()
-            if re.fullmatch(r"\d{2}-\d{4}-\d{7}", candidate):
-                result["application_number"] = candidate
-                break
-
-    app_date_patterns = [
-        r"(?:출원일자|출원 일자|출원일|Application\s*Date)\s*[:：]?\s*((?:19|20)\d{2}[.\-/년\s]+\d{1,2}[.\-/월\s]+\d{1,2}\.?\s*일?)",
-        r"\((?:22|21)\)\s*출원일\s*[:：]?\s*((?:19|20)\d{2}[.\-/년\s]+\d{1,2}[.\-/월\s]+\d{1,2}\.?\s*일?)",
-    ]
-    for pat in app_date_patterns:
-        m = re.search(pat, text, re.I)
-        if m:
-            raw = m.group(1).strip()
-            nums = re.findall(r"\d+", raw)
-            if len(nums) >= 3:
-                result["application_date"] = f"{int(nums[0]):04d}.{int(nums[1]):02d}.{int(nums[2]):02d}"
-            else:
-                result["application_date"] = raw
-            break
-    return result
-
-
-def format_manual_application_date(value) -> str:
-    if not value:
+        pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0), alpha=False)
+        b64 = base64.b64encode(pix.tobytes("png")).decode("ascii")
+        client = get_client()
+        res = client.responses.create(
+            model=TEXT_MODEL_FIXED,
+            input=[{
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": (
+                        f"이 이미지는 한국 특허 관련 PDF의 {page_no}페이지다. "
+                        "OCR만 수행하라. 보이는 텍스트를 원문 순서대로 최대한 정확히 전사하고, "
+                        "출원번호·출원일자·대표도-도N·도면번호의 숫자와 하이픈을 절대 추정하거나 바꾸지 마라. "
+                        "설명이나 요약 없이 OCR 텍스트만 출력하라."
+                    )},
+                    {"type": "input_image", "image_url": f"data:image/png;base64,{b64}"},
+                ],
+            }],
+            temperature=0,
+        )
+        return (res.output_text or "").strip()
+    except Exception:
         return ""
-    if hasattr(value, "strftime"):
-        return value.strftime("%Y.%m.%d")
-    return str(value).strip()
 
 
-def ip_label(lang: str, key: str, ip: Dict[str, Any]) -> str:
-    """등록정보가 없으면 출력 라벨에서 등록번호/등록일자 문구를 제거한다."""
-    has_registration = bool(str(ip.get("registration_number") or "").strip() or str(ip.get("registration_date") or "").strip())
-    if has_registration:
-        return label(lang, key)
-    simple = {
-        "ko": {"app_no": "출원번호", "app_date": "출원일자"},
-        "en": {"app_no": "Application No.", "app_date": "Application Date"},
-        "zh": {"app_no": "申请号", "app_date": "申请日期"},
-        "ja": {"app_no": "出願番号", "app_date": "出願日"},
+def extract_patent_pages_text(pdf_path: str) -> tuple[list[str], bool]:
+    """페이지별 텍스트와 OCR 사용 여부를 반환한다.
+
+    기본은 PDF 텍스트 레이어를 그대로 사용한다. 문서 전체에서 검색 가능한 텍스트가 하나도
+    없을 때만 모든 페이지를 OCR한다.
+    """
+    doc = fitz.open(pdf_path)
+    native = [page.get_text("text") or "" for page in doc]
+    native_all = "\n".join(native)
+    if _has_searchable_pdf_text(native_all):
+        doc.close()
+        return native, False
+
+    ocr_pages = []
+    for i, page in enumerate(doc):
+        ocr_pages.append(_ocr_page_with_openai(page, i + 1))
+    doc.close()
+    return ocr_pages, True
+
+
+def extract_patent_text(pdf_path: str) -> str:
+    pages, _ = extract_patent_pages_text(pdf_path)
+    return "\n".join(pages)[:60000]
+
+
+def _normalize_date_match(m: re.Match | None) -> str:
+    if not m:
+        return ""
+    y, mo, d = m.group(1), int(m.group(2)), int(m.group(3))
+    return f"{y}.{mo:02d}.{d:02d}"
+
+
+def _is_publication_gazette(first_page_text: str) -> bool:
+    t = re.sub(r"\s+", "", first_page_text or "")
+    return "공개특허공보" in t
+
+
+def _extract_labeled_application_no(text: str) -> str:
+    """출원번호 의미가 명확한 문맥에 붙은 00-0000-0000000 형식만 인정한다."""
+    if not text:
+        return ""
+    for m in APPLICATION_NO_RE.finditer(text):
+        left = text[max(0, m.start() - 100):m.start()]
+        right = text[m.end():min(len(text), m.end() + 50)]
+        context = left + " " + right
+        # 단순 '출원' 단어보다 출원번호/특허출원/application number를 우선하고,
+        # 일반 '출원'도 번호와 가까운 문맥에서만 허용한다.
+        if re.search(r"출\s*원\s*번\s*호|특\s*허\s*출\s*원|application\s*(?:no\.?|number)", context, re.I):
+            return m.group(1)
+        near = text[max(0, m.start() - 30):m.start()]
+        if re.search(r"출\s*원", near):
+            return m.group(1)
+    return ""
+
+
+def _extract_date_near_application_no(text: str, app_no: str) -> str:
+    if not text or not app_no:
+        return ""
+    pos = text.find(app_no)
+    if pos < 0:
+        return ""
+    window = text[max(0, pos - 220):min(len(text), pos + len(app_no) + 320)]
+    # 출원일자/출원일 표기가 있으면 그 뒤 날짜를 최우선으로 사용한다.
+    dm = re.search(r"출\s*원\s*(?:일\s*자|일)\s*[:：]?\s*" + DATE_RE.pattern, window)
+    if dm:
+        # DATE_RE가 안쪽 캡처를 가지므로 마지막 3개 날짜 그룹을 사용
+        groups = dm.groups()
+        y, mo, d = groups[-3], int(groups[-2]), int(groups[-1])
+        return f"{y}.{mo:02d}.{d:02d}"
+    dm2 = DATE_RE.search(window)
+    return _normalize_date_match(dm2)
+
+
+def extract_authoritative_application_metadata(page_texts: list[str]) -> dict:
+    """사용자가 정한 출원 메타 권위 규칙을 코드로 적용한다.
+
+    1) 공개공보: 1페이지 공식 메타에서만 추출.
+    2) 비공개공보: 전체 PDF에서 출원번호 문맥과 결합된 형식 일치 번호만 사용.
+    3) 못 찾으면 빈 값으로 남겨 UI 수기입력 fallback으로 넘긴다.
+    """
+    first = page_texts[0] if page_texts else ""
+    all_text = "\n".join(page_texts or [])
+    out = {
+        "is_publication_gazette": _is_publication_gazette(first),
+        "is_registration_gazette": "등록특허공보" in re.sub(r"\s+", "", first or ""),
+        "application_number": "",
+        "application_date": "",
     }
-    return simple.get(lang, simple["ko"]).get(key, label(lang, key))
+
+    if out["is_publication_gazette"]:
+        # 공개공보의 (21) 출원번호 / (22) 출원일자 공식 메타 영역만 사용한다.
+        no_m = re.search(
+            r"(?:\(\s*21\s*\)|\[\s*21\s*\])?\s*출\s*원\s*번\s*호\s*[:：]?\s*(\d{2}-\d{4}-\d{7})",
+            first,
+            re.I,
+        )
+        date_m = re.search(
+            r"(?:\(\s*22\s*\)|\[\s*22\s*\])?\s*출\s*원\s*(?:일\s*자|일)\s*[:：]?\s*" + DATE_RE.pattern,
+            first,
+            re.I,
+        )
+        if no_m:
+            out["application_number"] = no_m.group(1)
+        if date_m:
+            groups = date_m.groups()
+            y, mo, d = groups[-3], int(groups[-2]), int(groups[-1])
+            out["application_date"] = f"{y}.{mo:02d}.{d:02d}"
+        return out
+
+    app_no = _extract_labeled_application_no(all_text)
+    if app_no:
+        out["application_number"] = app_no
+        out["application_date"] = _extract_date_near_application_no(all_text, app_no)
+    return out
 
 
 def _render_page_image(doc: fitz.Document, page_index: int, zoom: float = 3.2) -> Image.Image:
@@ -941,7 +1025,8 @@ def analyze_patent_with_gpt(patent_text: str, university: str, department: str, 
 - 기술 차별성은 3개
 - 기존기술 한계는 2개
 - 기술적 우위는 2개
-- 지식재산권은 등록공보에 있는 출원번호/등록번호/출원일자/등록일자를 최대한 정확히 추출
+- 지식재산권의 출원번호와 출원일자는 별도 코드가 권위값을 결정하므로 절대 추정하지 말고, 명확히 보이는 경우에만 적는다
+- 등록번호/등록일자도 문서에 명시된 경우에만 적고 추정하지 않는다
 - 값이 없으면 빈 문자열로 둔다
 - 출력은 JSON만
 
@@ -2152,8 +2237,8 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     for xx in [c1, c2]:
         d.line((xx, table_y, xx, table_y+table_h), fill=card_line, width=1)
     draw_centered_wrapped(d, (table_x+8, table_y+4, c1-8, table_y+header_h2-2), label(lang, "invention"), load_font(19, True), black, max_lines=1)
-    draw_centered_wrapped(d, (c1+8, table_y+3, c2-8, table_y+header_h2-2), ip_label(lang, "app_no", ip), load_font(14, True), black, max_lines=2, line_gap=1)
-    draw_centered_wrapped(d, (c2+8, table_y+3, table_x+table_w-8, table_y+header_h2-2), ip_label(lang, "app_date", ip), load_font(14, True), black, max_lines=2, line_gap=1)
+    draw_centered_wrapped(d, (c1+8, table_y+3, c2-8, table_y+header_h2-2), ip_table_label(lang, "app_no", ip), load_font(14, True), black, max_lines=2, line_gap=1)
+    draw_centered_wrapped(d, (c2+8, table_y+3, table_x+table_w-8, table_y+header_h2-2), ip_table_label(lang, "app_date", ip), load_font(14, True), black, max_lines=2, line_gap=1)
     draw_centered_wrapped(d, (table_x+12, table_y+header_h2+8, c1-12, table_y+table_h-8), ip["title"] or data.get("original_title", ""), load_font(15, False), black, max_lines=2, line_gap=2)
     num_text = f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number']
     date_text = f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date']
@@ -2727,8 +2812,8 @@ def compose_infographic_brief(
     for xx in [c1, c2]:
         d.line((xx, table_y, xx, table_y+table_h), fill=line, width=1)
     draw_centered_wrapped(d, (table_x+8, table_y+4, c1-8, table_y+header_h-2), label(lang, 'invention'), load_font(15, True), (255,255,255), max_lines=1)
-    draw_centered_wrapped(d, (c1+8, table_y+4, c2-8, table_y+header_h-2), ip_label(lang, 'app_no', ip), load_font(12, True), (255,255,255), max_lines=2, line_gap=1)
-    draw_centered_wrapped(d, (c2+8, table_y+4, table_x+table_w-8, table_y+header_h-2), ip_label(lang, 'app_date', ip), load_font(12, True), (255,255,255), max_lines=2, line_gap=1)
+    draw_centered_wrapped(d, (c1+8, table_y+4, c2-8, table_y+header_h-2), label(lang, 'app_no'), load_font(12, True), (255,255,255), max_lines=2, line_gap=1)
+    draw_centered_wrapped(d, (c2+8, table_y+4, table_x+table_w-8, table_y+header_h-2), label(lang, 'app_date'), load_font(12, True), (255,255,255), max_lines=2, line_gap=1)
     draw_centered_wrapped(d, (table_x+12, table_y+header_h+10, c1-12, table_y+table_h-8), ip['title'] or data.get('original_title', ''), load_font(14, False), black, max_lines=2, line_gap=2)
     num_text = f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number']
     date_text = f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date']
@@ -3621,8 +3706,8 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
         shp=slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, px(xx), px(table_y), px(1), px(table_h))
         shp.fill.solid(); shp.fill.fore_color.rgb=RGBColor(*line); shp.line.fill.background()
     add_textbox(slide, table_x+8, table_y+7, col1-16, 26, label(lang, "invention"), 11, True, black, align=PP_ALIGN.CENTER)
-    add_textbox(slide, table_x+col1+8, table_y+3, col2-16, 34, ip_label(lang, "app_no", ip), 8.3, True, black, align=PP_ALIGN.CENTER)
-    add_textbox(slide, table_x+col1+col2+8, table_y+3, col3-16, 34, ip_label(lang, "app_date", ip), 8.3, True, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, table_x+col1+8, table_y+3, col2-16, 34, ip_table_label(lang, "app_no", ip), 8.3, True, black, align=PP_ALIGN.CENTER)
+    add_textbox(slide, table_x+col1+col2+8, table_y+3, col3-16, 34, ip_table_label(lang, "app_date", ip), 8.3, True, black, align=PP_ALIGN.CENTER)
     add_textbox(slide, table_x+12, table_y+48, col1-24, 56, ip["title"] or data.get("original_title",""), 8.4, False, black, align=PP_ALIGN.CENTER)
     add_textbox(slide, table_x+col1+8, table_y+48, col2-16, 56, f"{ip['application_number']}\n({ip['registration_number']})" if ip['registration_number'] else ip['application_number'], 10, False, black, align=PP_ALIGN.CENTER)
     add_textbox(slide, table_x+col1+col2+8, table_y+48, col3-16, 56, f"{ip['application_date']}\n({ip['registration_date']})" if ip['registration_date'] else ip['application_date'], 10, False, black, align=PP_ALIGN.CENTER)
@@ -3688,14 +3773,11 @@ with st.sidebar:
     university = custom_univ.strip() if selected_univ == "수기입력" else selected_univ
     department = st.text_input("학과/소속", placeholder="예: 활빈당공학과")
     professor = st.text_input("교수명", placeholder="예: 홍길동")
+    st.caption("출원번호·출원일자는 PDF에서 확인되지 않을 때만 아래 수기입력값을 사용합니다.")
+    manual_application_number = st.text_input("출원번호 (수기입력)", placeholder="예: 10-2026-0000000")
+    manual_application_date = st.date_input("출원일자 (수기입력)", value=None, format="YYYY-MM-DD")
     output_language_label = st.selectbox("SMK 언어", list(LANGUAGE_OPTIONS.keys()), index=0, help="교수명/담당자 성명은 입력한 그대로 유지됩니다.")
     output_language = get_lang_code(output_language_label)
-
-    st.divider()
-    st.subheader("출원정보 보완 입력")
-    st.caption("공개공보에서 자동 확인되지 않는 출원명세서의 경우에만 입력하세요.")
-    manual_application_number = st.text_input("출원번호", placeholder="예: 10-2026-0000000")
-    manual_application_date = st.date_input("출원일자", value=None, format="YYYY.MM.DD")
 
     st.divider()
     st.subheader("문의처")
@@ -3726,19 +3808,27 @@ if generate_btn:
 
     with st.spinner("PDF 분석 중..."):
         pdf_path = save_uploaded_file(uploaded_pdf)
-        patent_text = extract_patent_text(pdf_path)
-        first_page_text = extract_first_page_text(pdf_path)
-        extracted_application = extract_application_metadata_from_text(patent_text, first_page_text=first_page_text)
-        final_application_number = (extracted_application.get("application_number") or manual_application_number or "").strip()
-        final_application_date = (extracted_application.get("application_date") or format_manual_application_date(manual_application_date) or "").strip()
+        page_texts, ocr_used = extract_patent_pages_text(pdf_path)
+        patent_text = "\n".join(page_texts)[:60000]
+        authoritative_meta = extract_authoritative_application_metadata(page_texts)
+
+        manual_no = (manual_application_number or "").strip()
+        if manual_no and not APPLICATION_NO_RE.fullmatch(manual_no):
+            st.error("수기입력 출원번호는 00-0000-0000000 형식으로 입력해주세요.")
+            st.stop()
+        manual_date = manual_application_date.strftime("%Y.%m.%d") if manual_application_date else ""
+
+        final_app_no = authoritative_meta.get("application_number", "") or manual_no
+        final_app_date = authoritative_meta.get("application_date", "") or manual_date
         missing = []
-        if not final_application_number:
+        if not final_app_no:
             missing.append("출원번호")
-        if not final_application_date:
+        if not final_app_date:
             missing.append("출원일자")
         if missing:
-            st.error("업로드한 파일에서 " + "·".join(missing) + "를 확인할 수 없습니다. 왼쪽 '출원정보 보완 입력'에서 입력한 뒤 다시 생성하세요.")
+            st.error("출원번호 및 출원일자를 확인할 수 없습니다. 왼쪽 입력정보에서 직접 입력해주세요.")
             st.stop()
+
         rep_img = extract_representative_drawing(pdf_path)
         qr_img = extract_qr_code_from_first_page(pdf_path)
         st.session_state.pdf_path = pdf_path
@@ -3748,10 +3838,17 @@ if generate_btn:
     with st.spinner("GPT로 SMK 텍스트 생성 중..."):
         data = analyze_patent_with_gpt(patent_text, university, department, professor, output_language)
         data["university"] = university; data["department"] = department; data["professor"] = professor; data["language"] = output_language
-        data = localize_smk_data(data, output_language, university, department, professor)
+        # 출원번호/출원일자는 GPT 추정값을 사용하지 않고 코드에서 확정된 권위값으로 강제한다.
         data.setdefault("ip", {})
-        data["ip"]["application_number"] = final_application_number
-        data["ip"]["application_date"] = final_application_date
+        data["ip"]["application_number"] = final_app_no
+        data["ip"]["application_date"] = final_app_date
+        # 등록공보가 아닌 공개공보/출원서에서는 등록정보를 추정값으로 허용하지 않는다.
+        if not authoritative_meta.get("is_registration_gazette"):
+            data["ip"]["registration_number"] = ""
+            data["ip"]["registration_date"] = ""
+        data = localize_smk_data(data, output_language, university, department, professor)
+        if ocr_used:
+            st.info("텍스트 레이어가 없는 스캔 PDF로 확인되어 OCR 결과를 사용했습니다.")
 
     with st.spinner("시장현황 검색 및 그래프 구성 중..."):
         data["market_info"] = generate_market_info_with_web(data)
