@@ -28,16 +28,28 @@ from pptx.enum.text import PP_ALIGN, MSO_ANCHOR, MSO_AUTO_SIZE
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.dml.color import RGBColor
 
-TEXT_MODEL_FIXED = "gpt-4.1-mini"
+TEXT_MODEL_FIXED = os.getenv("TEXT_MODEL", "gpt-5.6-luna")
+TEXT_REASONING_EFFORT = os.getenv("TEXT_REASONING_EFFORT", "none")
 
 # Image model routing
 # - Asset/detail images for normal SMK sections: lightweight model
 # - Final premium reference-based infographic: higher-quality model
-ASSET_IMAGE_MODEL_FIXED = os.getenv("ASSET_IMAGE_MODEL", "gpt-image-1-mini")
-PREMIUM_IMAGE_MODEL_FIXED = os.getenv("PREMIUM_IMAGE_MODEL", "gpt-image-2")
+ASSET_IMAGE_MODEL_FIXED = os.getenv("ASSET_IMAGE_MODEL", "gpt-image-2.5-flare")
+PREMIUM_IMAGE_MODEL_FIXED = os.getenv("PREMIUM_IMAGE_MODEL", "gpt-image-2.5-sunburst")
+PREMIUM_IMAGE_QUALITY = os.getenv("PREMIUM_IMAGE_QUALITY", "xhigh")
 
 # Legacy alias retained only for any older helper that still references IMAGE_MODEL_FIXED.
 IMAGE_MODEL_FIXED = ASSET_IMAGE_MODEL_FIXED
+
+
+
+def _text_response_create(client, **kwargs):
+    """Cost-conscious GPT-5.6 Luna Responses wrapper."""
+    kwargs.setdefault("model", TEXT_MODEL_FIXED)
+    kwargs.setdefault("store", False)
+    kwargs.setdefault("prompt_cache_options", {"mode": "explicit"})
+    kwargs.setdefault("reasoning", {"effort": TEXT_REASONING_EFFORT})
+    return client.responses.create(**kwargs)
 
 LANGUAGE_OPTIONS = {
     "한국어": "ko",
@@ -211,7 +223,7 @@ Rules:
 Input JSON:
 {json.dumps(clean_terms, ensure_ascii=False)}
 """
-        res = client.responses.create(model=TEXT_MODEL_FIXED, input=prompt, temperature=0.1)
+        res = _text_response_create(client, model=TEXT_MODEL_FIXED, input=prompt, temperature=0.1)
         parsed = safe_json_parse(res.output_text)
         return {k: str(parsed.get(k, clean_terms.get(k, "")) or "") for k in clean_terms.keys()}
     except Exception:
@@ -536,7 +548,7 @@ def _ocr_page_with_openai(page: fitz.Page, page_no: int) -> str:
         pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0), alpha=False)
         b64 = base64.b64encode(pix.tobytes("png")).decode("ascii")
         client = get_client()
-        res = client.responses.create(
+        res = _text_response_create(client, 
             model=TEXT_MODEL_FIXED,
             input=[{
                 "role": "user",
@@ -1210,7 +1222,7 @@ JSON 형식:
 특허 명세서:
 {patent_text}
 """
-    res = client.responses.create(model=TEXT_MODEL_FIXED, input=prompt, temperature=0.2)
+    res = _text_response_create(client, model=TEXT_MODEL_FIXED, input=prompt, temperature=0.2)
     return safe_json_parse(res.output_text)
 
 def rgb_to_hex(color: Tuple[int, int, int]) -> str:
@@ -1257,75 +1269,63 @@ def generate_application_image(title: str, desc: str, university_logo: Image.Ima
     primary_hex = rgb_to_hex(primary)
     accent_hex = rgb_to_hex(accent)
     prompt = f"""
-Create ONE icon from a unified premium technology icon set for a Korean university tech-transfer one-page brochure.
+Create ONE simple application/product icon for a Korean university technology-transfer brochure.
 Application: {title}
 Description: {desc}
 
-Mandatory visual style:
-- pure white background only, no black background, no dark vignette, no colored backdrop
-- consistent semi-isometric vector-flat illustration style
-- use the selected university logo color family as the main accent palette
-- primary brand color: {primary_hex}
-- secondary brand color: {accent_hex}
-- preserve that brand-accented palette instead of default generic blue if the university logo color is different
-- allow white and light gray as neutrals only
-- same stroke thickness, same lighting direction, same icon scale
-- centered object with generous white margin
-- professional public-sector technology marketing style
-- no text, no letters, no logos, no watermark
+MANDATORY VISUAL DIRECTION:
+- minimal two-color OUTLINE ICON / pictogram
+- simple flat vector line-art, NOT 3D, NOT isometric, NOT realistic
+- one clear symbolic object only, recognizable at small size
+- place the symbol on a very pale mint circular badge
+- white outer background only
+- the icon itself should occupy roughly 55-65% of the square canvas
+- clean public-sector brochure aesthetic
+
+STRICTLY FORBIDDEN:
+- no panel, no card, no poster, no signboard
+- no monitor, no screen UI, no dashboard, no device mockup
+- no floating frame, no pedestal, no base bar, no underline
+- no black shadow strip, no dark vignette
+- no room, no landscape, no surrounding scene
+- no text, letters, numbers, labels, logos, watermark
+
+COLOR RULES:
+- main stroke / main fill color: {primary_hex}
+- secondary accent: {accent_hex}
+- use only the university brand color family plus white / very light gray
+- do not default to generic blue
+
+COMPOSITION:
+- centered and visually balanced
+- crisp medium-weight outline
+- simple geometry with generous white margin
 """
-    result = client.images.generate(model=ASSET_IMAGE_MODEL_FIXED, prompt=prompt, size="1024x1024")
+    result = client.images.generate(
+        model=ASSET_IMAGE_MODEL_FIXED,
+        prompt=prompt,
+        size="1024x1024",
+    )
     img_b64 = result.data[0].b64_json
     img = Image.open(BytesIO(base64.b64decode(img_b64))).convert("RGB")
     img = clean_dark_background(img)
-    return recolor_icon_palette(img, primary, accent)
+    img = _smart_trim_visual(img, threshold=249, padding=24)
+    img = recolor_icon_palette(img, primary, accent)
+    return fit_image(img, (1024, 1024), bg=(255,255,255), trim=False)
 
 
 def generate_application_images_set(apps: List[Dict[str, Any]], university_logo: Image.Image | None = None) -> List[Image.Image]:
-    """3개 적용분야 아이콘을 한 번에 생성 후 3등분해 그림체를 최대한 통일."""
-    client = get_client()
-    theme = extract_logo_theme(university_logo)
-    primary = theme["primary"]
-    accent = theme["accent"]
-    primary_hex = rgb_to_hex(primary)
-    accent_hex = rgb_to_hex(accent)
-    app_text = []
-    for idx, app in enumerate(apps[:3], 1):
-        app_text.append(f"{idx}. {app.get('name','')} - {app.get('description','')}")
-    joined = "\n".join(app_text)
-    prompt = f"""
-Create a horizontal set of THREE matching application icons for a Korean university technology brief.
-The three icons must look like they belong to the exact same icon family.
-
-Applications:
-{joined}
-
-Mandatory layout:
-- 3 separate icons arranged left, center, right with large white spacing
-- pure white background only
-- no dividers, no text, no labels, no logos, no watermark
-
-Mandatory unified visual style:
-- consistent semi-isometric vector-flat illustration style
-- use the selected university logo color family as the main accent palette
-- primary brand color: {primary_hex}
-- secondary brand color: {accent_hex}
-- preserve that brand-accented palette instead of default generic blue if the university logo color is different
-- allow white and light gray as neutrals only
-- same stroke thickness, same lighting direction, same icon scale
-- centered objects, generous white margin
-- professional public-sector technology marketing style
-"""
-    result = client.images.generate(model=ASSET_IMAGE_MODEL_FIXED, prompt=prompt, size="1536x1024")
-    img_b64 = result.data[0].b64_json
-    sheet = Image.open(BytesIO(base64.b64decode(img_b64))).convert("RGB")
-    sheet = clean_dark_background(sheet)
-    w, h = sheet.size
-    icons = []
-    for i in range(3):
-        crop = sheet.crop((i*w//3, 0, (i+1)*w//3, h))
-        icons.append(recolor_icon_palette(crop, primary, accent))
+    """Generate each application icon independently to avoid unstable 3-way sheet cropping."""
+    icons: List[Image.Image] = []
+    for app in apps[:3]:
+        title = str(app.get("name", "") or "")
+        desc = str(app.get("description", "") or "")
+        try:
+            icons.append(generate_application_image(title, desc, university_logo=university_logo))
+        except Exception:
+            icons.append(Image.new("RGB", (1024,1024), "white"))
     return icons
+
 
 # -----------------------------------------------------
 # Image utilities
@@ -1627,7 +1627,7 @@ JSON 형식:
 {app_text}
 """
     try:
-        res = client.responses.create(model=TEXT_MODEL_FIXED, input=prompt, temperature=0.1)
+        res = _text_response_create(client, model=TEXT_MODEL_FIXED, input=prompt, temperature=0.1)
         parsed = safe_json_parse(res.output_text)
         raw_candidates = parsed.get("candidates") or []
         candidates: List[Dict[str, str]] = []
@@ -1715,7 +1715,7 @@ JSON 형식:
 {cand_text}
 """
     try:
-        res = client.responses.create(
+        res = _text_response_create(client, 
             model=TEXT_MODEL_FIXED,
             input=prompt,
             tools=[{"type": "web_search_preview"}],
@@ -1808,7 +1808,7 @@ JSON 형식:
 {app_text}
 """
     try:
-        res = client.responses.create(
+        res = _text_response_create(client, 
             model=TEXT_MODEL_FIXED,
             input=prompt,
             tools=[{"type": "web_search_preview"}],
@@ -3588,6 +3588,7 @@ def generate_reference_based_premium_infographic(
                 image=files,
                 prompt=prompt,
                 size='1024x1536',
+                quality=PREMIUM_IMAGE_QUALITY,
             )
         raw = _extract_generated_image_bytes(result)
         generated = Image.open(BytesIO(raw)).convert('RGB')
@@ -4062,7 +4063,7 @@ else:
 
         if st.session_state.hq_image is not None:
             st.markdown("#### 프리미엄 인포그래픽 이미지")
-            st.caption("번들된 premium_infographic_reference.png를 gpt-image-2로 직접 참고해 프리미엄 인포그래픽을 생성한 결과입니다. 프리미엄 레퍼런스, 현재 SMK, 대학 로고, 대학 로고 기반 색상 팔레트, PIUM+QR 카드, 대표도면을 참조 이미지로 전달해 전체를 프리미엄 스타일로 다시 구성합니다. 별도의 후합성 없이 생성 결과 자체를 그대로 사용하며, 로고와 대표도면은 참조 이미지 기반으로 최대한 안정적으로 보존하도록 유도합니다. 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
+            st.caption("번들된 premium_infographic_reference.png를 gpt-image-2.5-sunburst로 직접 참고해 프리미엄 인포그래픽을 생성한 결과입니다. 프리미엄 레퍼런스, 현재 SMK, 대학 로고, 대학 로고 기반 색상 팔레트, PIUM+QR 카드, 대표도면을 참조 이미지로 전달해 전체를 프리미엄 스타일로 다시 구성합니다. 별도의 후합성 없이 생성 결과 자체를 그대로 사용하며, 로고와 대표도면은 참조 이미지 기반으로 최대한 안정적으로 보존하도록 유도합니다. 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
             st.image(st.session_state.hq_image, use_container_width=True)
             d1, d2 = st.columns(2)
             with d1:
