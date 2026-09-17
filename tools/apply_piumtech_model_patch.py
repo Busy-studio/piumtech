@@ -1,5 +1,4 @@
 from pathlib import Path
-import re
 import subprocess
 import sys
 
@@ -101,7 +100,7 @@ COMPOSITION:
 '''
 
 SET_ICON_FUNCTION = r'''def generate_application_images_set(apps: List[Dict[str, Any]], university_logo: Image.Image | None = None) -> List[Image.Image]:
-    \"\"\"Generate each application icon independently to avoid unstable 3-way sheet cropping.\"\"\"
+    """Generate each application icon independently to avoid unstable 3-way sheet cropping."""
     icons: List[Image.Image] = []
     for app in apps[:3]:
         title = str(app.get("name", "") or "")
@@ -188,4 +187,4 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-# workflow trigger: 2026-09-17
+# workflow trigger: syntax-fixed
