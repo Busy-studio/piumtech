@@ -14,8 +14,8 @@ def load_source():
     with urllib.request.urlopen(RAW_URL, timeout=30) as r:
         return r.read().decode("utf-8"), None
 
-def insert_once(text: str, marker: str, block: str) -> str:
-    if block.strip() in text:
+def insert_once(text: str, marker: str, block: str, identity: str) -> str:
+    if identity in text:
         return text
     if marker not in text:
         raise RuntimeError(f"Marker not found: {marker}")
@@ -59,7 +59,7 @@ def _text_response_create(client, **kwargs):
     return client.responses.create(**kwargs)
 
 '''
-    text = insert_once(text, "LANGUAGE_OPTIONS = {", helper)
+    text = insert_once(text, "LANGUAGE_OPTIONS = {", helper, "_text_response_create(")
     return text, count
 
 def patch_icon_helpers(text: str) -> str:
@@ -91,7 +91,7 @@ def _pad_icon_to_square(img: Image.Image, size: int = 512, bg: str = "white") ->
     if w == 0 or h == 0:
         return Image.new("RGB", (size, size), bg)
 
-    margin = max(20, size // 12)
+    margin = max(24, size // 10)
     max_w = size - margin * 2
     max_h = size - margin * 2
     scale = min(max_w / w, max_h / h)
@@ -106,35 +106,51 @@ def _pad_icon_to_square(img: Image.Image, size: int = 512, bg: str = "white") ->
     return canvas.convert("RGB")
 
 
-def _build_flat_application_icon_prompt(title: str, desc: str, primary_hex: str, accent_hex: str) -> str:
+def _build_line_badge_application_icon_prompt(title: str, desc: str, primary_hex: str, accent_hex: str) -> str:
     return f"""
-Create ONE isolated application/product icon for a university technology brochure.
+Create ONE simple brochure icon for a university technology handout.
 
 Application title: {title}
 Description: {desc}
 
 Mandatory style:
-- clean Flaticon-like vector icon
-- flat to semi-isometric pictogram style
-- simple geometric forms, crisp edges, minimal detail
-- one main subject only
-- icon must fill about 65-75% of the canvas
-- white background only
-- no panel, no card, no poster, no signboard, no screen UI, no device mockup, no floating frame
-- no pedestal, no base bar, no shadow strip, no black underline
-- no surrounding scene, no room, no landscape, no decorative border
-- no text, no letters, no numbers, no labels, no logos, no watermark
+- clean minimal 2-color outline icon
+- line icon + simple pictogram style
+- NOT 3D, NOT isometric, NOT realistic
+- one centered symbol only
+- use very simple geometry and clear silhouette
+- icon should occupy about 55-65% of the square canvas
+- place the icon inside or over a very light mint circular badge
+- badge must be simple, flat, and subtle
+- white outer background only
+
+Strictly forbidden:
+- no panel
+- no card
+- no poster
+- no signboard
+- no screen UI
+- no monitor
+- no mockup
+- no device frame
+- no pedestal
+- no base bar
+- no black underline
+- no dark shadow strip
+- no room or scene
+- no text, letters, numbers, labels, logos, watermark
 
 Color rules:
-- primary brand color: {primary_hex}
-- secondary brand color: {accent_hex}
-- use the brand color family instead of generic blue
-- allow only white and light gray as neutral support colors
+- main stroke color: {primary_hex}
+- secondary accent color: {accent_hex}
+- keep the palette very limited
+- use white and very light gray only as neutral colors
+- do not use generic blue as the main color
 
-Composition:
-- centered icon
-- generous clean white margin
-- object isolated and clearly legible at small brochure size
+Output character:
+- polished public-sector brochure icon
+- legible at small size
+- stable, simple, neat
 """.strip()
 
 
@@ -147,7 +163,7 @@ def _generate_single_application_icon(
     primary_hex: str,
     accent_hex: str,
 ) -> Image.Image:
-    prompt = _build_flat_application_icon_prompt(title, desc, primary_hex, accent_hex)
+    prompt = _build_line_badge_application_icon_prompt(title, desc, primary_hex, accent_hex)
     result = client.images.generate(
         model=ASSET_IMAGE_MODEL_FIXED,
         prompt=prompt,
@@ -156,7 +172,7 @@ def _generate_single_application_icon(
     img_b64 = result.data[0].b64_json
     icon = Image.open(BytesIO(base64.b64decode(img_b64))).convert("RGB")
     icon = clean_dark_background(icon)
-    icon = _smart_trim_visual(icon, threshold=248, padding=22)
+    icon = _smart_trim_visual(icon, threshold=249, padding=26)
     icon = recolor_icon_palette(icon, primary, accent)
     icon = _pad_icon_to_square(icon, size=512)
     return icon
@@ -181,14 +197,19 @@ def _generate_application_icons(
                 )
             )
         except Exception:
-            fallback = Image.new("RGB", (512, 512), "white")
-            icons.append(recolor_icon_palette(fallback, primary, accent))
+            icons.append(Image.new("RGB", (512, 512), "white"))
     return icons
 
 '''
-    return insert_once(text, "# -----------------------------------------------------\n# Image utilities", helper)
+    return insert_once(
+        text,
+        "# -----------------------------------------------------\n# Image utilities",
+        helper,
+        "_build_line_badge_application_icon_prompt("
+    )
 
 def patch_multi_icon_body(text: str):
+    # Original 3-split generation block
     old = '''    result = client.images.generate(model=ASSET_IMAGE_MODEL_FIXED, prompt=prompt, size="1536x1024")
     img_b64 = result.data[0].b64_json
     sheet = Image.open(BytesIO(base64.b64decode(img_b64))).convert("RGB")
@@ -202,6 +223,10 @@ def patch_multi_icon_body(text: str):
     new = '    return _generate_application_icons(client, apps, primary, accent, primary_hex, accent_hex)'
     if old in text:
         return text.replace(old, new, 1), True
+
+    # If an earlier patch already changed it, keep as-is.
+    if new in text:
+        return text, True
 
     pattern = re.compile(
         r'^\s*result = client\.images\.generate\(model=ASSET_IMAGE_MODEL_FIXED, prompt=prompt, size="1536x1024"\)\n'
@@ -220,7 +245,7 @@ def patch_multi_icon_body(text: str):
     return text2, bool(n)
 
 def main():
-    src, src_path = load_source()
+    src, _ = load_source()
     text = patch_models(src)
     text, text_call_count = patch_text_wrapper(text)
     text = patch_icon_helpers(text)
@@ -230,8 +255,8 @@ def main():
         'gpt-5.6-luna',
         'gpt-image-2.5-flare',
         'gpt-image-2.5-sunburst',
+        '_build_line_badge_application_icon_prompt(',
         '_generate_application_icons(',
-        '_generate_single_application_icon(',
         'prompt_cache_options',
         'store", False',
     ]
@@ -241,7 +266,7 @@ def main():
     if text_call_count < 1:
         raise RuntimeError("No client.responses.create calls found; source layout may have changed.")
     if not icon_body_patched:
-        raise RuntimeError("Could not patch the 3-split application icon generation block.")
+        raise RuntimeError("Could not patch the application-icon generation block.")
 
     out = Path(__file__).resolve().parent / "app_patched.py"
     out.write_text(text, encoding="utf-8", newline="\n")
@@ -252,7 +277,7 @@ def main():
     print("텍스트: gpt-5.6-luna / reasoning=none / store=False / implicit prompt cache 비활성")
     print("일반 이미지: gpt-image-2.5-flare")
     print("프리미엄 이미지: gpt-image-2.5-sunburst")
-    print("적용제품 아이콘: 1장 3분할 방식 제거, 개별 Flaticon형 아이콘 생성으로 전환")
+    print("적용제품 아이콘: 단순 2색 라인 아이콘 + 연한 원형 배지 방식으로 전환")
     print()
     print("GitHub에 올릴 때 app_patched.py를 app.py로 이름 변경해서 업로드하세요.")
 
