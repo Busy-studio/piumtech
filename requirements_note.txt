@@ -1,0 +1,1 @@
+기존 requirements.txt를 우선 사용하세요. SDK 오류가 나면 OpenAI 패키지만 최신 안정 버전으로 업데이트하세요.
