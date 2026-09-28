@@ -606,6 +606,59 @@ def _is_publication_gazette(first_page_text: str) -> bool:
     return "공개특허공보" in t
 
 
+def _build_loose_heading_re(*headings: str):
+    """OCR/텍스트 추출 과정의 글자 사이 공백을 허용하는 섹션 제목 정규식."""
+    alternatives = "|".join(
+        r"\s*".join(re.escape(ch) for ch in heading)
+        for heading in headings
+    )
+    return re.compile(
+        rf"(?im)(?:[【\[]\s*(?:{alternatives})\s*[】\]]|^[ \t]*(?:{alternatives})[ \t]*$)"
+    )
+
+
+_PRIOR_ART_SECTION_START_RE = _build_loose_heading_re(
+    "선행기술문헌",
+    "특허문헌",
+    "비특허문헌",
+    "인용문헌",
+    "참고문헌",
+)
+_PRIOR_ART_SECTION_END_RE = _build_loose_heading_re(
+    "발명의 내용",
+    "해결하고자 하는 과제",
+    "과제의 해결 수단",
+    "발명의 효과",
+    "도면의 간단한 설명",
+    "발명을 실시하기 위한 구체적인 내용",
+    "청구범위",
+    "요약서",
+)
+
+
+def _without_prior_art_reference_sections(text: str) -> str:
+    """선행/특허/인용 문헌 구간을 제거해 참조 특허번호가 본 건 번호로 오인되지 않게 한다."""
+    if not text:
+        return ""
+
+    parts = []
+    cursor = 0
+    while True:
+        start = _PRIOR_ART_SECTION_START_RE.search(text, cursor)
+        if not start:
+            parts.append(text[cursor:])
+            break
+
+        parts.append(text[cursor:start.start()])
+        end = _PRIOR_ART_SECTION_END_RE.search(text, start.end())
+        if not end:
+            # 섹션 종료 제목이 없는 불완전 문서라면 참조문헌 시작 이후는 메타 추출에서 제외한다.
+            break
+        cursor = end.start()
+
+    return "".join(parts)
+
+
 def _extract_labeled_application_no(text: str) -> str:
     """출원번호 의미가 명확한 문맥에 붙은 00-0000-0000000 형식만 인정한다."""
     if not text:
@@ -646,11 +699,13 @@ def extract_authoritative_application_metadata(page_texts: list[str]) -> dict:
     """사용자가 정한 출원 메타 권위 규칙을 코드로 적용한다.
 
     1) 공개공보: 1페이지 공식 메타에서만 추출.
-    2) 비공개공보: 전체 PDF에서 출원번호 문맥과 결합된 형식 일치 번호만 사용.
+    2) 그 외 문서: 선행기술문헌·특허문헌·인용문헌 구간을 제외한 본문에서만
+       출원번호 문맥과 결합된 형식 일치 번호를 사용.
     3) 못 찾으면 빈 값으로 남겨 UI 수기입력 fallback으로 넘긴다.
     """
     first = page_texts[0] if page_texts else ""
     all_text = "\n".join(page_texts or [])
+    metadata_text = _without_prior_art_reference_sections(all_text)
     out = {
         "is_publication_gazette": _is_publication_gazette(first),
         "is_registration_gazette": "등록특허공보" in re.sub(r"\s+", "", first or ""),
@@ -678,10 +733,10 @@ def extract_authoritative_application_metadata(page_texts: list[str]) -> dict:
             out["application_date"] = f"{y}.{mo:02d}.{d:02d}"
         return out
 
-    app_no = _extract_labeled_application_no(all_text)
+    app_no = _extract_labeled_application_no(metadata_text)
     if app_no:
         out["application_number"] = app_no
-        out["application_date"] = _extract_date_near_application_no(all_text, app_no)
+        out["application_date"] = _extract_date_near_application_no(metadata_text, app_no)
     return out
 
 
@@ -1184,6 +1239,7 @@ def analyze_patent_with_gpt(patent_text: str, university: str, department: str, 
 - 기존기술 한계는 2개
 - 기술적 우위는 2개
 - 지식재산권의 출원번호와 출원일자는 별도 코드가 권위값을 결정하므로 절대 추정하지 말고, 명확히 보이는 경우에만 적는다
+- 【선행기술문헌】·【특허문헌】·【인용문헌】에 기재된 번호는 참조 문헌 번호이므로 본 특허의 출원번호로 사용하지 않는다
 - 등록번호/등록일자도 문서에 명시된 경우에만 적고 추정하지 않는다
 - 값이 없으면 빈 문자열로 둔다
 - 출력은 JSON만
