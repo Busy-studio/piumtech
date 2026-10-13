@@ -6,6 +6,18 @@ import base64
 import tempfile
 import zipfile
 import shutil
+import hashlib
+import logging
+
+from patent_drawing import (
+    extract_drawing_result, extract_representative_drawing,
+    parse_representative_figure_number as _parse_representative_figure_number,
+    is_target_figure_page as _is_target_figure_page,
+)
+from smk_drawing_assets import (
+    DRAWING_POLICY_VERSION, reset_document_state, make_drawing_slot_reference,
+    reference_manifest, drawing_slot_instructions, composite_verified_drawing,
+)
 import requests
 from contextlib import ExitStack
 from io import BytesIO
@@ -952,32 +964,10 @@ def _extract_best_embedded_image_from_page(doc: fitz.Document, page_index: int, 
         return None
 
 
-def _parse_representative_figure_number(text: str) -> str | None:
-    """요약서/공보의 '대표도 - 도N' 또는 '[대표도] 도 N' 표기에서 번호를 읽는다."""
-    if not text:
-        return None
-    patterns = [
-        r"대\s*표\s*도\s*[-–—:]?\s*(?:도\s*)?([0-9]+)",
-        r"\[\s*대\s*표\s*도\s*\]\s*(?:도\s*)?([0-9]+)",
-    ]
-    for pat in patterns:
-        m = re.search(pat, text, flags=re.I)
-        if m:
-            return m.group(1)
-    return None
+# Representative drawing selection is implemented in patent_drawing.py.
 
 
-def _is_target_figure_page(text: str, rep_no: str) -> bool:
-    """OCR/텍스트에서 '도 N' 도면 페이지인지 보수적으로 판정한다."""
-    if not text or not rep_no:
-        return False
-    t = re.sub(r"\s+", " ", text)
-    pats = [
-        rf"\[\s*도\s*{re.escape(rep_no)}\s*\]",
-        rf"(?:^|\n)\s*도\s*{re.escape(rep_no)}\s*(?:$|\n)",
-        rf"\[\s*도면\s*\].{{0,120}}\[?\s*도\s*{re.escape(rep_no)}\s*\]?",
-    ]
-    return any(re.search(p, text, flags=re.I | re.S | re.M) for p in pats)
+# Representative drawing selection is implemented in patent_drawing.py.
 
 
 def _crop_drawing_from_rendered_page(page_img: Image.Image) -> Image.Image:
@@ -1053,100 +1043,7 @@ def _crop_drawing_from_rendered_page(page_img: Image.Image) -> Image.Image:
     return _smart_trim_visual(sub, threshold=248, padding=14)
 
 
-def extract_representative_drawing(
-    pdf_path: str,
-    page_texts: list[str] | None = None,
-    ocr_used: bool = False,
-) -> Image.Image:
-    """대표도면 추출.
-
-    - 텍스트 PDF: 기존 embedded-image 추출을 우선 사용.
-    - 스캔 PDF: OCR된 page_texts에서 '대표도 - 도N'과 '[도 N]' 페이지를 찾은 뒤,
-      해당 페이지를 렌더링하여 실제 도면 영역만 크롭한다.
-    - OCR 결과를 이 함수에 전달해 메타 분석과 대표도면 탐색이 같은 페이지 텍스트를 공유한다.
-    """
-    doc = fitz.open(pdf_path)
-    if len(doc) == 0:
-        doc.close()
-        return Image.new("RGB", (800, 600), "white")
-
-    if page_texts is None:
-        page_texts = [page.get_text("text") or "" for page in doc]
-    if len(page_texts) < len(doc):
-        page_texts = list(page_texts) + [""] * (len(doc) - len(page_texts))
-
-    # 대표도 번호는 특정 1페이지만 가정하지 않는다. 출원서의 요약서는 뒤쪽에 있을 수 있다.
-    rep_no = None
-    rep_source_page = None
-    for i, txt in enumerate(page_texts):
-        n = _parse_representative_figure_number(txt)
-        if n:
-            rep_no = n
-            rep_source_page = i
-            break
-
-    # 스캔 PDF: 페이지 전체가 embedded image이므로 embedded 추출 금지.
-    if ocr_used:
-        if rep_no:
-            for i, txt in enumerate(page_texts):
-                if i == rep_source_page:
-                    continue
-                if _is_target_figure_page(txt, rep_no):
-                    rendered = _render_page_image(doc, i, zoom=3.2)
-                    doc.close()
-                    return _crop_drawing_from_rendered_page(rendered)
-
-        # 대표도 번호를 못 찾았더라도 OCR에서 명확한 [도면]/[도 1] 페이지가 있으면 첫 도면을 fallback.
-        for i, txt in enumerate(page_texts):
-            if re.search(r"\[\s*도면\s*\]", txt or "") and re.search(r"\[?\s*도\s*[0-9]+\s*\]?", txt or ""):
-                rendered = _render_page_image(doc, i, zoom=3.2)
-                doc.close()
-                return _crop_drawing_from_rendered_page(rendered)
-
-        # 최후 fallback도 1페이지 본문 크롭이 아니라, 문서 후반의 시각 밀도 높은 페이지를 선택한다.
-        best = None
-        for i in range(len(doc)):
-            rendered = _render_page_image(doc, i, zoom=1.5)
-            arr = np.asarray(rendered.convert("L"))
-            ink = float((arr < 235).mean())
-            # 도면이 주로 등장하는 후반부에 약간 가중치. 단, 과도한 휴리스틱은 피하고 시각 밀도만 사용.
-            score = ink
-            if best is None or score > best[0]:
-                best = (score, i)
-        idx = best[1] if best else 0
-        rendered = _render_page_image(doc, idx, zoom=3.2)
-        doc.close()
-        return _crop_drawing_from_rendered_page(rendered)
-
-    # 텍스트 PDF에서는 1페이지 embedded 대표도가 있으면 우선 사용한다.
-    first_embedded = _extract_best_embedded_image_from_page(doc, 0, prefer_square=False, min_area=30000)
-    if first_embedded is not None and first_embedded.width > 160 and first_embedded.height > 120:
-        doc.close()
-        return first_embedded
-
-    # 대표도 번호 기준으로 실제 도면 페이지를 찾는다.
-    if rep_no:
-        for i, txt in enumerate(page_texts):
-            if _is_target_figure_page(txt, rep_no):
-                img = _extract_best_embedded_image_from_page(doc, i, prefer_square=False, min_area=25000)
-                if img is not None:
-                    doc.close()
-                    return img
-                rendered = _render_page_image(doc, i, zoom=3.2)
-                doc.close()
-                return _crop_drawing_from_rendered_page(rendered)
-
-    # fallback: 도면 페이지 중 큰 이미지 객체 우선 추출
-    for i, txt in enumerate(page_texts):
-        if "도면" in (txt or "") or re.search(r"(?:^|\n)\s*\[?도\s*[0-9]+\]?", txt or ""):
-            img = _extract_best_embedded_image_from_page(doc, i, prefer_square=False, min_area=25000)
-            if img is not None:
-                doc.close()
-                return img
-
-    first_img = _render_page_image(doc, 0, zoom=3.2)
-    doc.close()
-    return _crop_representative_from_first_page(first_img)
+# Representative drawing selection is implemented in patent_drawing.py.
 
 def extract_qr_code_from_first_page(pdf_path: str) -> Image.Image | None:
     """등록공보 1페이지 우측 상단 QR 코드만 추출한다.
@@ -2225,7 +2122,7 @@ def _draw_shadowed_card(draw, xyxy, radius=28, fill=(255,255,255), outline=(220,
     draw.rounded_rectangle(xyxy, radius=radius, fill=fill, outline=outline, width=width)
 
 
-def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str, university_logo: Image.Image | None = None, pium_logo: Image.Image | None = None, qr_img: Image.Image | None = None, piumlink_logo: Image.Image | None = None) -> Image.Image:
+def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image | None, app_imgs: List[Image.Image], contact: str, university_logo: Image.Image | None = None, pium_logo: Image.Image | None = None, qr_img: Image.Image | None = None, piumlink_logo: Image.Image | None = None) -> Image.Image:
     """시장현황 영역을 포함한 1페이지 PIUM Tech Brief 렌더러."""
     W, H = 1240, 1754
     im = Image.new("RGB", (W, H), "white")
@@ -2404,8 +2301,9 @@ def compose_tech_brief(data: Dict[str, Any], rep_img: Image.Image, app_imgs: Lis
     draw_section_title(d, X+36, y+34, label(lang, "drawing"), sec_font, primary)
     draw_section_title(d, comp_x+36, y+34, label(lang, "competitiveness"), sec_font, primary)
 
-    rep = fit_image(rep_img, (rep_w_box-74, 214), bg=(255,255,255), trim=True)
-    im.paste(rep, (X+37, y+82))
+    if rep_img is not None:
+        rep = fit_image(rep_img, (rep_w_box-74, 214), bg=(255,255,255), trim=True)
+        im.paste(rep, (X+37, y+82))
 
     inner_x = comp_x + 44
     inner_w = comp_w - 70
@@ -2819,7 +2717,7 @@ def draw_arrow_down(im: Image.Image, center_x: int, y: int, color=(160,200,245))
 
 def compose_infographic_brief(
     data: Dict[str, Any],
-    rep_img: Image.Image,
+    rep_img: Image.Image | None,
     app_imgs: List[Image.Image],
     contact: str,
     university_logo: Image.Image | None = None,
@@ -2983,8 +2881,9 @@ def compose_infographic_brief(
     d.rounded_rectangle((564, comp_y+16, 602, comp_y+52), radius=8, fill=mix(primary, (255,255,255), 0.90))
     draw_simple_feature_icon(d, (570, comp_y+22, 596, comp_y+46), 'shield', color=deep_blue)
     d.text((614, comp_y+14), label(lang, 'competitiveness'), font=load_font(24, True), fill=deep_blue)
-    rep = fit_image(rep_img, (420, 228), bg=(255,255,255), trim=True)
-    im.paste(rep, (24 + (490-rep.width)//2, comp_y+92))
+    if rep_img is not None:
+        rep = fit_image(rep_img, (420, 204), bg=(255,255,255), trim=True)
+        im.paste(rep, (24 + (490-rep.width)//2, comp_y+92))
 
     lim_box = (562, comp_y+84, 1198, comp_y+190)
     adv_box = (562, comp_y+254, 1198, comp_y+380)
@@ -3049,7 +2948,7 @@ def resolve_premium_reference_path() -> str:
     raise FileNotFoundError(f"Premium reference image not found: {PREMIUM_REFERENCE_IMAGE_PATH}")
 
 
-def build_premium_infographic_ai_prompt(data: Dict[str, Any], contact: str, university_logo: Image.Image | None = None) -> str:
+def build_premium_infographic_ai_prompt(data: Dict[str, Any], contact: str, university_logo: Image.Image | None = None, reference_descriptions: List[str] | None = None, has_drawing: bool = True) -> str:
     lang = get_lang_code(data.get("language", "ko"))
     apps = data.get("applications", [])[:3]
     market = normalize_market_info(data.get("market_info", {}))
@@ -3081,14 +2980,13 @@ def build_premium_infographic_ai_prompt(data: Dict[str, Any], contact: str, univ
     brand_secondary_hex = rgb_to_hex(brand_secondary)
     brand_accent_hex = rgb_to_hex(brand_accent)
     prompt = f"""
-You are given multiple reference images:
-- Image A: premium_infographic_reference.png. Use this as the MAIN design/style reference.
-- Image B: the current generated SMK page. Use this for the actual content, existing logos/QR block placement, representative drawing context, and information architecture.
-- Image C: the original university logo asset. Use this exact logo visually; do not redraw it into a different logo.
-- Image D: the original PIUM + QR reference card/block. Use this exact PIUM/QR block visually; do not create a second fake QR and do not duplicate the QR elsewhere.
-- Image E: the original representative drawing. Use this drawing visually as the representative drawing panel; do not replace it with a different diagram.
+You are given these reference images in their exact upload order:
+{reference_manifest(reference_descriptions or [])}
+Only the current SMK and the content below are factual sources. The sanitized design
+reference supplies layout/style only, never patent data, diagrams, titles or numbers.
+{drawing_slot_instructions(has_drawing)}
 
-Create ONE premium Korean technology infographic image based on Image A's layout quality and Image B's actual content.
+Create ONE premium Korean technology infographic image based on the design reference's layout quality and the current SMK's actual content.
 This is NOT a blank redesign. It is a premium restyling of the current SMK using the supplied assets.
 
 IMPORTANT ASSET + COLOR RULES:
@@ -3097,12 +2995,12 @@ IMPORTANT ASSET + COLOR RULES:
 - Preserve the university logo faithfully and keep it clean, sharp, and undistorted in the top-left area.
 - Preserve the PIUM+QR block faithfully in the top-right area. Do not redraw it into a fake logo or fake QR code.
 - Do not create extra QR codes. There should be only one PIUM/QR block in the top-right area.
-- Preserve the representative drawing faithfully in the representative drawing section. Do not replace it with a different diagram.
-- The final premium image itself must already contain the logo, PIUM+QR block, and representative drawing correctly. Do not rely on any later overlay or post-compositing step.
+- Do not draw the representative drawing; reserve the solid placeholder exactly as specified above.
+- Preserve available logos/PIUM assets. ONLY the representative drawing is inserted deterministically after generation.
 
 Design target:
-- Visually close to Image A in layout quality and premium brochure polish, BUT do NOT copy Image A's blue color palette blindly.
-- The main color palette MUST follow the university logo / Image C brand color.
+- Visually close to the design reference in layout quality and premium brochure polish, BUT do NOT copy the design reference's blue color palette blindly.
+- The main color palette MUST follow the university logo / the supplied university logo brand color.
 - Use this brand palette as the dominant UI color system:
   - primary: {brand_primary_hex}
   - secondary: {brand_secondary_hex}
@@ -3477,7 +3375,7 @@ def _paste_section(base_img: Image.Image, section_img: Image.Image, box: tuple[i
 
 def build_stable_premium_reference_image(
     data: Dict[str, Any],
-    rep_img: Image.Image,
+    rep_img: Image.Image | None,
     app_imgs: List[Image.Image],
     contact: str,
     university_logo: Image.Image | None = None,
@@ -3583,7 +3481,7 @@ def overlay_rep_drawing_micro_patch(img: Image.Image, rep_img: Image.Image | Non
 def apply_mandatory_premium_corrections(
     generated: Image.Image,
     data: Dict[str, Any],
-    rep_img: Image.Image,
+    rep_img: Image.Image | None,
     contact: str,
     university_logo: Image.Image | None = None,
     pium_logo: Image.Image | None = None,
@@ -3604,7 +3502,7 @@ def apply_mandatory_premium_corrections(
 
 def generate_reference_based_premium_infographic(
     data: Dict[str, Any],
-    rep_img: Image.Image,
+    rep_img: Image.Image | None,
     app_imgs: List[Image.Image],
     contact: str,
     university_logo: Image.Image | None = None,
@@ -3613,68 +3511,54 @@ def generate_reference_based_premium_infographic(
     piumlink_logo: Image.Image | None = None,
     base_smk_img: Image.Image | None = None,
 ) -> Image.Image:
-    """레퍼런스 기반 프리미엄 인포그래픽 생성.
-    후합성으로 강제로 덮지 않고, 프리미엄 레퍼런스 + 현재 SMK + 원본 자산들을
-    모두 입력 이미지로 제공한 뒤 gpt-image-2가 자연스럽게 활용하도록 한다.
-    실패 시 규칙 기반 렌더러로 fallback한다.
+    """Sanitized references + dynamic manifest + exact drawing/blank composition.
+
+    If the generated drawing slot cannot be identified safely, use the current
+    document's rule-based renderer instead of returning an unverified AI diagram.
     """
     temp_paths: List[str] = []
+    descriptions: List[str] = []
+    def add_reference(image, prefix, description):
+        temp_paths.append(_save_temp_png(image, prefix))
+        descriptions.append(description)
     try:
         client = get_client()
-        ref_path = resolve_premium_reference_path()
-        prompt = build_premium_infographic_ai_prompt(data, contact, university_logo=university_logo)
-
-        # Reference images: style reference + current SMK + exact asset references.
-        temp_paths.append(ref_path)
+        with Image.open(resolve_premium_reference_path()) as source:
+            add_reference(make_drawing_slot_reference(source), 'premium_style_',
+                          'Sanitized DESIGN/STYLE reference with a solid magenta drawing slot. Not a source of patent facts.')
         if base_smk_img is not None:
-            temp_paths.append(_save_temp_png(base_smk_img, 'premium_base_smk_'))
+            add_reference(base_smk_img, 'premium_base_smk_', 'CURRENT SMK: factual content and information architecture. Do not redraw its drawing.')
         if university_logo is not None:
-            temp_paths.append(_save_temp_png(university_logo, 'premium_univ_logo_'))
-        # Explicit brand palette reference: prevents the reference image's blue palette from overriding university-specific colors.
-        temp_paths.append(_save_temp_png(make_brand_palette_reference_card(university_logo), 'premium_brand_palette_'))
-        pium_qr_card = make_pium_qr_reference_card(pium_logo, qr_img, piumlink_logo)
-        temp_paths.append(_save_temp_png(pium_qr_card, 'premium_pium_qr_'))
+            add_reference(university_logo, 'premium_univ_logo_', 'Original university logo; preserve this exact asset.')
+        add_reference(make_brand_palette_reference_card(university_logo), 'premium_brand_palette_',
+                      'University BRAND COLOR PALETTE, not a logo or drawing.')
+        add_reference(make_pium_qr_reference_card(pium_logo, qr_img, piumlink_logo), 'premium_pium_qr_',
+                      'PIUM/QR asset card; use only the assets actually present, never invent a QR.')
         if rep_img is not None:
-            temp_paths.append(_save_temp_png(rep_img, 'premium_rep_drawing_'))
-
+            add_reference(rep_img, 'premium_rep_drawing_',
+                          'Verified CURRENT PDF drawing, for context only. Code inserts these pixels after generation; do not redraw or duplicate it.')
+        prompt = build_premium_infographic_ai_prompt(
+            data, contact, university_logo=university_logo,
+            reference_descriptions=descriptions, has_drawing=rep_img is not None,
+        )
         with ExitStack() as stack:
             files = [stack.enter_context(open(p, 'rb')) for p in temp_paths]
-            result = client.images.edit(
-                model=PREMIUM_IMAGE_MODEL_FIXED,
-                image=files,
-                prompt=prompt,
-                size='1024x1536',
-                quality=PREMIUM_IMAGE_QUALITY,
-            )
-        raw = _extract_generated_image_bytes(result)
-        generated = Image.open(BytesIO(raw)).convert('RGB')
-        return generated
-    except Exception:
-        # fallback: preserve operational stability
+            result = client.images.edit(model=PREMIUM_IMAGE_MODEL_FIXED, image=files,
+                                        prompt=prompt, size='1024x1536', quality=PREMIUM_IMAGE_QUALITY)
+        generated = Image.open(BytesIO(_extract_generated_image_bytes(result))).convert('RGB')
+        return composite_verified_drawing(generated, rep_img)
+    except Exception as exc:
+        logging.getLogger(__name__).warning('Premium drawing validation/generation failed: %s', type(exc).__name__)
+        st.warning('프리미엄 도면 영역을 안전하게 확인하지 못해 원본 도면을 보존하는 규칙 기반 출력으로 전환했습니다.')
         return make_high_quality_infographic_image(
-            data,
-            rep_img,
-            app_imgs,
-            contact,
-            university_logo=university_logo,
-            pium_logo=pium_logo,
-            qr_img=qr_img,
-            piumlink_logo=piumlink_logo,
+            data, rep_img, app_imgs, contact, university_logo=university_logo,
+            pium_logo=pium_logo, qr_img=qr_img, piumlink_logo=piumlink_logo,
         )
     finally:
-        # remove temporary files except bundled reference path
-        ref_abs = None
-        try:
-            ref_abs = os.path.abspath(resolve_premium_reference_path())
-        except Exception:
-            pass
-        for p in temp_paths:
+        for path in temp_paths:
             try:
-                if ref_abs and os.path.abspath(p) == ref_abs:
-                    continue
-                if os.path.exists(p):
-                    os.remove(p)
-            except Exception:
+                os.remove(path)
+            except OSError:
                 pass
 
 
@@ -3684,7 +3568,7 @@ def make_high_quality_infographic_image(
 
 
     data: Dict[str, Any],
-    rep_img: Image.Image,
+    rep_img: Image.Image | None,
     app_imgs: List[Image.Image],
     contact: str,
     university_logo: Image.Image | None = None,
@@ -3776,7 +3660,7 @@ def add_rect(slide, x, y, w, h, fill=(255,255,255), outline=(220,230,242), radiu
     return shp
 
 
-def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[Image.Image], contact: str, university_logo: Image.Image | None = None, pium_logo: Image.Image | None = None, qr_img: Image.Image | None = None, piumlink_logo: Image.Image | None = None) -> bytes:
+def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image | None, app_imgs: List[Image.Image], contact: str, university_logo: Image.Image | None = None, pium_logo: Image.Image | None = None, qr_img: Image.Image | None = None, piumlink_logo: Image.Image | None = None) -> bytes:
     """시장현황 포함 PPTX 생성."""
     pal = get_visual_palette(university_logo)
     uni_primary = pal["uni_primary"]
@@ -3887,7 +3771,8 @@ def make_pptx_bytes(data: Dict[str, Any], rep_img: Image.Image, app_imgs: List[I
     add_rect(slide, X, y, rep_w_box, comp_h, fill=(255,255,255), outline=line, radius=True)
     add_rect(slide, comp_x, y, comp_w, comp_h, fill=(255,255,255), outline=line, radius=True)
     add_textbox(slide, X+36, y+34, 180, 34, label(lang, "drawing"), 15, True, primary)
-    slide.shapes.add_picture(img_bytes(fit_image(rep_img, (rep_w_box-74,214), trim=True)), px(X+37), px(y+82), width=px(rep_w_box-74), height=px(214))
+    if rep_img is not None:
+        slide.shapes.add_picture(img_bytes(fit_image(rep_img, (rep_w_box-74,214), trim=True)), px(X+37), px(y+82), width=px(rep_w_box-74), height=px(214))
     add_textbox(slide, comp_x+36, y+34, 220, 34, label(lang, "competitiveness"), 15, True, primary)
     inner_x=comp_x+44; inner_w=comp_w-70
     add_rect(slide, inner_x, y+76, inner_w, 102, fill=(255,255,255), outline=line, radius=True)
@@ -3998,12 +3883,21 @@ with st.sidebar:
 for key, default in {
     "data": None, "brief_image": None, "pdf_bytes": None, "pptx_bytes": None,
     "pdf_path": None, "app_imgs": [], "rep_img": None, "qr_img": None, "edit_version": 0,
-    "hq_image": None, "hq_png_bytes": None, "hq_pdf_bytes": None
+    "hq_image": None, "hq_png_bytes": None, "hq_pdf_bytes": None,
+    "drawing_meta": None, "source_pdf_sha256": None, "drawing_policy_version": None,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
 
+# Bind every result to PDF bytes, not the filename. Also invalidate pre-fix sessions.
+current_pdf_sha256 = hashlib.sha256(uploaded_pdf.getvalue()).hexdigest() if uploaded_pdf is not None else None
+if (st.session_state.source_pdf_sha256 != current_pdf_sha256
+        or st.session_state.drawing_policy_version != DRAWING_POLICY_VERSION):
+    reset_document_state(st.session_state, current_pdf_sha256)
+
 if generate_btn:
+    # Clear before validation/API calls so failed generation cannot expose old data.
+    reset_document_state(st.session_state, current_pdf_sha256)
     if uploaded_pdf is None:
         st.error("특허 명세서 PDF를 업로드하세요."); st.stop()
     if not university:
@@ -4032,7 +3926,9 @@ if generate_btn:
             st.error("출원번호 및 출원일자를 확인할 수 없습니다. 왼쪽 입력정보에서 직접 입력해주세요.")
             st.stop()
 
-        rep_img = extract_representative_drawing(pdf_path, page_texts=page_texts, ocr_used=ocr_used)
+        drawing_result = extract_drawing_result(pdf_path, page_texts=page_texts, ocr_used=ocr_used)
+        rep_img = drawing_result.image
+        st.session_state.drawing_meta = drawing_result.metadata()
         qr_img = extract_qr_code_from_first_page(pdf_path)
         st.session_state.pdf_path = pdf_path
         st.session_state.rep_img = rep_img
@@ -4050,12 +3946,13 @@ if generate_btn:
             data["ip"]["registration_number"] = ""
             data["ip"]["registration_date"] = ""
         data = localize_smk_data(data, output_language, university, department, professor)
+        data["drawing"] = st.session_state.drawing_meta
         if ocr_used:
             st.info("텍스트 레이어가 없는 스캔 PDF로 확인되어 OCR 결과를 사용했습니다.")
 
     with st.spinner("시장현황 검색 및 그래프 구성 중..."):
         data["market_info"] = generate_market_info_with_web(data)
-        st.session_state.data = data
+        # Publish data only after every output has been built successfully.
         st.session_state.edit_version += 1
     university_logo = get_logo_image(university) if use_logos else None
 
@@ -4085,6 +3982,7 @@ if generate_btn:
         st.session_state.brief_image = brief
         st.session_state.pdf_bytes = make_pdf_bytes_from_image(brief)
         st.session_state.pptx_bytes = make_pptx_bytes(data, rep_img, app_imgs, contact, university_logo, pium_logo, st.session_state.qr_img, piumlink_logo)
+        st.session_state.data = data
         st.session_state.hq_image = None
         st.session_state.hq_png_bytes = None
         st.session_state.hq_pdf_bytes = None
@@ -4095,6 +3993,13 @@ else:
     col1, col2 = st.columns([1.15, 0.85], gap="large")
     with col1:
         st.subheader("SMK 미리보기")
+        drawing_meta = st.session_state.drawing_meta or {}
+        if drawing_meta.get("status") == "selected":
+            st.caption(f"대표도면: 원본 PDF {drawing_meta['page']}페이지 · {drawing_meta.get('reason', '')}")
+        elif drawing_meta.get("status") in ("review_required", "error"):
+            st.warning(drawing_meta.get("reason", "도면 확인이 필요합니다. 현재 출력은 공란입니다."))
+        else:
+            st.caption("대표도면: 원본에서 확인된 도면이 없어 공란으로 출력합니다.")
         st.image(st.session_state.brief_image, use_container_width=True)
 
         if st.button("프리미엄 이미지/PDF로 변환", use_container_width=True):
@@ -4119,7 +4024,7 @@ else:
 
         if st.session_state.hq_image is not None:
             st.markdown("#### 프리미엄 인포그래픽 이미지")
-            st.caption("번들된 premium_infographic_reference.png를 gpt-image-2.5-sunburst로 직접 참고해 프리미엄 인포그래픽을 생성한 결과입니다. 프리미엄 레퍼런스, 현재 SMK, 대학 로고, 대학 로고 기반 색상 팔레트, PIUM+QR 카드, 대표도면을 참조 이미지로 전달해 전체를 프리미엄 스타일로 다시 구성합니다. 별도의 후합성 없이 생성 결과 자체를 그대로 사용하며, 로고와 대표도면은 참조 이미지 기반으로 최대한 안정적으로 보존하도록 유도합니다. 생성 실패 시 기존 규칙 기반 고품질 렌더러로 자동 fallback됩니다.")
+            st.caption("디자인 참고 이미지의 예시 도면은 제거하며, 실제 업로드 순서에 맞춰 참조 이미지를 전달합니다. 대표도면은 현재 PDF의 원본을 직접 삽입하고, 도면이 없으면 공란으로 유지합니다. 생성 결과의 도면 영역을 확인하지 못하면 규칙 기반 고품질 출력으로 전환합니다.")
             st.image(st.session_state.hq_image, use_container_width=True)
             d1, d2 = st.columns(2)
             with d1:
@@ -4237,7 +4142,9 @@ else:
                 edited = localize_smk_data(edited, output_language, university, department, professor)
                 edited["market_info"] = generate_market_info_with_web(edited)
                 contact = build_contact_text(org, name, position, phone, email, output_language)
-                rep_img = st.session_state.rep_img or extract_representative_drawing(st.session_state.pdf_path)
+                # None is a valid, completed no-drawing result; never re-extract or reuse another PDF.
+                rep_img = st.session_state.rep_img
+                edited["drawing"] = st.session_state.drawing_meta
                 university_logo = get_logo_image(university) if use_logos else None
                 pium_logo = get_pium_logo_image() if use_logos else None
                 piumlink_logo = get_piumlink_logo_image() if use_logos else None

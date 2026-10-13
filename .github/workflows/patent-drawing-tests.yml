@@ -1,0 +1,24 @@
+name: Patent drawing regression tests
+on:
+  push:
+    branches: [main]
+    paths: ['app.py', '*drawing*.py', 'tests/**', '.github/workflows/patent-drawing-tests.yml']
+  pull_request:
+    paths: ['app.py', '*drawing*.py', 'tests/**', '.github/workflows/patent-drawing-tests.yml']
+permissions:
+  contents: read
+jobs:
+  drawing-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: python -m pip install 'pymupdf>=1.24' 'pillow>=10' numpy matplotlib python-pptx requests
+      - name: Syntax and API-free regression tests
+        run: |
+          python -m py_compile app.py patent_drawing.py smk_drawing_assets.py
+          python -m unittest discover -s tests -v
